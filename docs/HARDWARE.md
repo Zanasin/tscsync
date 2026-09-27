@@ -8,7 +8,7 @@ distribution, and `tscsync-status` output).
 
 | Model | CPU | BIOS | Pattern at GRUB | Result |
 |---|---|---|---|---|
-| Lenovo Legion Pro 5 16ADR10 / Legion R7000P ADR10 (83LT) | Ryzen 9 8945HX | RLCN32WW | BSP 5.0–6.5e9 cycles behind all 31 APs | TSC kept on cold boot, reboot and S3 resume; APs within ±18 cycles; ~0.5 s boot cost |
+| Lenovo Legion Pro 5 16ADR10 / Legion R7000P ADR10 (83LT) | Ryzen 9 8945HX | RLCN32WW | BSP 5.0–6.5e9 cycles behind all 31 APs | TSC kept on every cold boot, reboot and S3 resume since v1.3; v2.0.0: BSP corrected to 0 cycles, 3 APs fine-tuned, verify 31/31 clean, 579 ms |
 
 ## Reported with the same symptom (not yet tested with tscsync)
 

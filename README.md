@@ -65,7 +65,7 @@ stay on and confirm the result.
    `check_tsc_warp()`, stores a report in RAM, and returns to GRUB.
 5. Linux boots, finds the TSCs in sync and keeps the TSC clocksource.
 
-The whole run takes about 0.5 s. Details and measurements:
+The whole run takes about 0.6 s. Details and measurements:
 [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Safety

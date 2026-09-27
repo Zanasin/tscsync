@@ -99,10 +99,10 @@ counts as in sync only at an exact zero-tick offset.
 
 ### Boot cost
 
-About 0.5 s on a 32-thread Ryzen: survey ~35 ms, BSP correction ~60 ms, AP
-pass ~60 ms, verify with warp tests ~400 ms. `systemd-analyze` reports a
-longer "loader" time because the firmware measures it with the BSP's TSC,
-which tscsync moves forward.
+About 0.6 s on a 32-thread Ryzen (v2.0.0 measured 579 ms): survey ~35 ms,
+BSP correction ~60–100 ms, AP pass ~60 ms, verify with warp tests ~400 ms.
+`systemd-analyze` reports a longer "loader" time because the firmware
+measures it with the BSP's TSC, which tscsync moves forward.
 
 ## Boot integration
 
