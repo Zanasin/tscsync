@@ -127,11 +127,11 @@ fi
 if [ "$NOSIGN" = 0 ]; then
 	command -v sbsign >/dev/null || die "sbsign not found (package: sbsigntools / sbsigntool)"
 	[ -f "$KEY" ] && [ -f "$CERT" ] || die "key or certificate not found"
-	if openssl x509 -in "$CERT" -noout 2>/dev/null; then
-		cp "$CERT" "$tmp/cert.pem"
-	else
-		openssl x509 -inform DER -in "$CERT" -out "$tmp/cert.pem"
-	fi
+	# Always write a real PEM file: sbsign needs PEM, and newer OpenSSL
+	# auto-detects DER input, so "can openssl read it?" is not a PEM test.
+	openssl x509 -in "$CERT" -outform PEM -out "$tmp/cert.pem" 2>/dev/null ||
+		openssl x509 -inform DER -in "$CERT" -outform PEM -out "$tmp/cert.pem" ||
+		die "cannot read certificate $CERT"
 	if [ "$SB" = 1 ]; then
 		FP=$(openssl x509 -in "$tmp/cert.pem" -noout -fingerprint -sha1 | cut -d= -f2)
 		mokutil --list-enrolled 2>/dev/null | grep -qiF "SHA1 Fingerprint: $FP" ||
