@@ -2,10 +2,14 @@
 [Unit]
 Description=Record tscsync result and clear its GRUB hang guard
 RequiresMountsFor=/boot
+# Offline-update boots (PackageKit, dnf offline) start system-update.target
+# instead of multi-user.target and reboot when done. Clear the guard there
+# too, before the update starts, or the next boot would disable tscsync.
+Before=system-update-pre.target
 
 [Service]
 Type=oneshot
 ExecStart=/usr/local/libexec/tscsync-report
 
 [Install]
-WantedBy=multi-user.target
+WantedBy=multi-user.target system-update.target

@@ -114,7 +114,10 @@ measures it with the BSP's TSC, which tscsync moves forward.
 - Hang guard: the hook sets `tscsync_pending=1` in grubenv before running
   the tool; `tscsync-report.service` clears it once Linux is up. A boot that
   never reaches Linux leaves it set, so the next boot skips the tool and sets
-  `tscsync_enable=0`.
+  `tscsync_enable=0`. The service is wanted by both `multi-user.target` and
+  `system-update.target`: offline-update boots (PackageKit, dnf offline)
+  never reach `multi-user.target`, and without this, one such boot was
+  enough to disable tscsync.
 - The report is stored in the volatile EFI variable
   `TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000` and copied to
   `/run/tscsync-result.txt` at boot.
