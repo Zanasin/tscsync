@@ -163,9 +163,18 @@ CPU and the output of `tscsync-status`. That builds the list in
 [docs/HARDWARE.md](docs/HARDWARE.md) and shows vendors how widespread the bug
 is.
 
+## Background report
+
+[docs/report/tsc-firmware-report.pdf](docs/report/tsc-firmware-report.pdf)
+covers 80 boots of boot history from the Legion Pro 5. It explains why this
+BIOS leaves the TSCs out of sync when the hardware can keep them in sync, and
+makes the case for open firmware with safe, vendor-signed updates. The data
+and scripts behind it are in [docs/report/](docs/report/).
+
 ## License
 
 MIT, see [LICENSE](LICENSE). Firmware vendors are welcome to use the approach
-or the code in their own firmware, which is where this should be fixed.
+or the code in their own firmware, which is where this should be fixed. The
+report in `docs/report/` is under CC BY 4.0.
 
 gnu-efi, downloaded at build time, is under its own BSD-style license.

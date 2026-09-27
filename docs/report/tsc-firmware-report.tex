@@ -1,0 +1,520 @@
+% SPDX-License-Identifier: CC-BY-4.0
+% Build: make   (needs pdflatex with pgfplots, booktabs, enumitem, microtype)
+\documentclass[11pt,a4paper]{article}
+
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{textcomp}
+\usepackage{microtype}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{booktabs}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{pgfplots}
+\pgfplotsset{compat=1.18}
+\PassOptionsToPackage{hyphens}{url}
+\usepackage[hidelinks]{hyperref}
+\usepackage{url}
+\Urlmuskip=0mu plus 1mu
+
+\setlist{itemsep=2pt,topsep=4pt}
+\newcommand{\code}[1]{\texttt{#1}}
+\newcolumntype{L}{>{\raggedright\arraybackslash}X}
+\renewcommand{\arraystretch}{1.15}
+
+\input{data/fit.tex}
+
+\title{Why a Capable CPU Boots With Broken Clocks\\[4pt]
+  \large The Legion Pro 5 TSC bug and the case for open firmware}
+\author{Hasin Ishraq\\
+  \small Undergraduate CSE student, Islamic University of Technology (IUT), Bangladesh\\
+  \small \href{mailto:hasinishraq001@gmail.com}{\nolinkurl{hasinishraq001@gmail.com}}}
+\date{28 September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+On every boot, the firmware of a Lenovo Legion Pro 5 16ADR10 (BIOS RLCN32WW)
+hands Linux a processor whose cores disagree about the time by about two
+seconds. The system journal recorded this on all 69 unfixed boots with a
+complete kernel log between 28 August and 26 September 2026, across six
+Linux kernels. The hardware is not at fault: the same cores agree perfectly
+after resuming from sleep, and a 0.6-second pre-boot tool that moves one
+counter makes Linux accept them on every boot. The bug is a few lines of
+firmware logic, but the owner cannot fix it, because the CPU is fused to run
+only Lenovo-signed firmware. That is the argument this report makes for open
+firmware: source code the community can read and patch, delivered through the
+same signed, recoverable update path vendors already use.
+\end{abstract}
+
+% ---------------------------------------------------------------------------
+\section{The boot history}
+
+The systemd journal kept the kernel log of 80 boots from 28 August to
+28 September 2026, and every boot without a fix failed the kernel's TSC
+check. Since the pre-boot fix, tscsync~\cite{tscsync}, reached its current
+form (v1.3), all 7 boots kept the TSC. Table~\ref{tab:history} groups the
+boots by what ran before Linux.
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}l l r L@{}}
+\toprule
+Phase & Dates (2026) & Boots & What the kernel did \\
+\midrule
+No fix & 28 Aug -- 26 Sep & 68 & Rejected the TSC on all 67 boots with a full
+  log; warp 5.04--6.50 billion cycles \\
+tscsync v1.0, measure only & 26 -- 27 Sep & 2 & Rejected; the tool saw all
+  31 other cores 5,690,270,7xx cycles ahead of CPU~0, and the kernel measured
+  5,690,270,706 \\
+tscsync v1.1, sync & 27 Sep & 1 & Rejected: a 25-cycle warp remained \\
+tscsync v1.2, sync & 27 Sep & 2 & 1 kept the TSC; 1 rejected it (25-cycle
+  warp) \\
+tscsync v1.3, sync & 27 Sep & 3 & Kept the TSC after a cold start, a clean
+  shutdown and a reboot \\
+tscsync v1.4, sync & 27 Sep & 1 & Kept the TSC, also through 2 resumes from
+  sleep \\
+tscsync v1.5, sync & 27 Sep & 2 & Kept the TSC; 556\,ms per boot \\
+tscsync v2.0.0, sync & 28 Sep & 1 & Kept the TSC; all 31 cores within $-15$
+  to $+1$ cycles of CPU~0; 579\,ms \\
+\bottomrule
+\end{tabularx}
+\caption{Every boot in the journal, grouped by what ran before Linux. Measure
+mode reads the counters and writes nothing, so those boots count as unfixed.}
+\label{tab:history}
+\end{table}
+
+The one unfixed boot without a warp line has a journal that starts
+6.3~seconds in, after the kernel's check. The failures of v1.1 and v1.2 came
+from the tool's precision, not the hardware; they set the 10-cycle target
+later versions use.
+
+% ---------------------------------------------------------------------------
+\section{The fingerprint of a firmware bug}
+
+The warp is exactly proportional to how long the firmware ran, with no fixed
+part: 833.31 million cycles per second of firmware time, intercept
+$-0.41$\,ms, $R^2 = 0.999999$, largest miss 0.18\,ms
+(Figure~\ref{fig:warp}).
+
+\begin{figure}[ht]
+\centering
+\begin{tikzpicture}
+\begin{axis}[
+  width=0.9\textwidth, height=7.5cm,
+  xmin=0, xmax=8, ymin=0, ymax=8,
+  xtick={0,2,4,6,8}, ytick={0,2,4,6,8},
+  xlabel={Firmware time before the boot loader (s)},
+  ylabel={TSC warp at boot (billion cycles)},
+  grid=major, grid style={gray!25},
+  legend pos=north west, legend cell align=left,
+  tick label style={font=\small}, label style={font=\small},
+  legend style={font=\small},
+]
+\addplot[only marks, mark=*, mark size=1.6pt, color=blue!70!black, fill opacity=0.7]
+  table[x=firmware_s, y=warp_gcycles, col sep=comma] {data/warp-vs-firmware.csv};
+\addlegendentry{Unfixed boot (\fitpoints{} boots)}
+\addplot[domain=0:8, samples=2, dashed, thick, color=red!70!black]
+  {\fitslope * x};
+\addlegendentry{Line through zero, slope \fitslope{} billion cycles/s}
+\end{axis}
+\end{tikzpicture}
+\caption{TSC warp the kernel measured against systemd's firmware time, for
+every unfixed boot that logged both (28 August to 27 September 2026). The 9
+unfixed boots without a point are PackageKit offline-update boots, which
+reboot before systemd records the firmware time.}
+\label{fig:warp}
+\end{figure}
+
+The firmware time comes from the firmware's own boot-performance table
+(ACPI FPDT), which it measures with CPU~0's TSC. At a TSC rate of about
+2.495\,GHz, the warp is one third of CPU~0's own count: when the boot loader
+starts, CPU~0's counter reads three quarters of every other core's. A delay
+would add a constant; this is a scale error in how CPU~0's counter is set up
+or counted.
+
+Three more measurements point at the same place:
+\begin{itemize}
+\item \textbf{Only CPU~0 is off.} Measured from GRUB before Linux, all 31
+  other cores agreed within about 40 cycles, across both chiplets, and all
+  were 5.2--5.7 billion cycles ahead of CPU~0.
+\item \textbf{Nothing after the firmware changes it.} The pre-boot tool
+  measured 5,690,270,7xx cycles; the kernel measured 5,690,270,706 moments
+  later on the same boot.
+\item \textbf{The resume path is correct.} After a suspend and resume, the
+  firmware restarts all counters and every core agrees; the kernel re-checks
+  each core and keeps the TSC.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\section{The hardware is capable}
+
+Nothing about the Ryzen 9 8945HX prevents synchronized counters. Four facts
+from this machine show it:
+\begin{itemize}
+\item \textbf{The counters are invariant.} The CPU reports an invariant TSC
+  (\code{constant\_tsc}, \code{nonstop\_tsc}): every core's counter runs at a
+  fixed rate regardless of power state, so once the counters agree they stay
+  in agreement.
+\item \textbf{The firmware already gets it right once.} Resuming from sleep
+  (S3) runs a different firmware path, which starts all 32 counters together.
+  Linux re-checks every core on resume and keeps the TSC.
+\item \textbf{One write fixes it.} A 0.6-second pre-boot tool moves only
+  CPU~0's counter forward by about 5.2 billion cycles. The kernel then accepts
+  the TSC on every boot, and user-space probes see all cores within a few
+  dozen cycles for the rest of the session.
+\item \textbf{Windows hides the gap.} Windows synchronizes the counters itself
+  at boot and exposes that as a boot option, \code{tscsyncpolicy}
+  \cite{bcdedit}. A laptop sold and tested with Windows never shows the
+  symptom.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\section{Why this BIOS fails and others don't}
+
+On AMD Zen, the firmware alone is responsible for handing over synchronized
+counters. This BIOS's cold-boot path leaves CPU~0 behind, and nothing
+downstream catches it.
+
+\paragraph{Who is allowed to fix an offset.} Intel CPUs have a per-core
+register, \code{IA32\_TSC\_ADJUST}, and Linux uses it to pull a mismatched
+core back into line when it comes online~\cite{tscsync-c}. Zen CPUs have no
+such register (this machine reports \code{tsc\_adjust=0}). Without it, Linux
+tests once and falls back to HPET; the kernel's timekeeping maintainer
+rejected writing the counters directly from the kernel as ``flaky and
+unreliable''~\cite{lkml}. So on AMD, only firmware can get this right.
+
+\paragraph{What this BIOS does differently.} The data narrows it down, though
+not to a line of code: the error is a clean scale factor on CPU~0 alone,
+produced during the pre-boot firmware phase and absent from the resume path.
+The likeliest explanation is that the cold-boot path initializes or clocks
+CPU~0's counter differently from the other 31 cores and never re-synchronizes
+them before handing over. Confirming it needs Lenovo's source.
+
+\paragraph{Why it ships anyway.} Windows re-synchronizes the counters itself
+at every boot, so a laptop validated on Windows passes. Firmware that syncs
+correctly (the resume path here, and most other vendors' boot paths) leaves
+nothing for either operating system to repair, which is why most AMD laptops
+never show this warning.
+
+\paragraph{It is not the first time.} The same symptom was reported on the
+IdeaPad 5 2-in-1 14AHP9 (BIOS P1CN32WW) and on another Legion Pro 5 16ADR10,
+with a Ryzen 9 8940HX, on the same RLCN32WW BIOS~\cite{lenovo-forum}. Users
+also report that Lenovo fixed the same class of bug by BIOS update on the
+ThinkPad A485, E495 and T14s Gen~1 AMD models; those forum pages could not be
+opened for this report, so treat that history as reported, not verified.
+
+% ---------------------------------------------------------------------------
+\section{What it costs users}
+
+On HPET, every clock read is a trip to a slow timer device, and the kernel
+and desktop read the clock tens of thousands of times a second
+(Table~\ref{tab:cost}).
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}L L L@{}}
+\toprule
+Measure on this laptop & HPET (firmware as shipped) & TSC (after the pre-boot
+  fix) \\
+\midrule
+\code{clock\_gettime} from Python, per call & 1,241\,ns & 144\,ns \\
+CPU temperature, mostly idle & 66--72\,\textdegree C (owner's observation) &
+  59--63\,\textdegree C; 59.9\,\textdegree C measured, 97.6\,\% of the time in
+  the deepest idle state \\
+\bottomrule
+\end{tabularx}
+\caption{Cost of the HPET fallback. Both timing figures include Python's own
+call overhead, so the raw difference is larger. The temperature comparison is
+an owner's observation, not yet a controlled test; tscsync includes a
+benchmark script (\code{tools/idle-bench.sh}) for one.}
+\label{tab:cost}
+\end{table}
+
+Forcing the TSC on anyway (\code{tsc=reliable}) is not a workaround: the
+counters really are two seconds apart. The IdeaPad owner who first reported
+this found that it causes audio and video stutter during playback and erratic
+kernel timers~\cite{lenovo-forum}.
+
+% ---------------------------------------------------------------------------
+\section{Why owners cannot fix it themselves}
+
+The fix is small, but on this laptop only Lenovo can ship it: the CPU is
+permanently fused to Lenovo's firmware signing key.
+\begin{itemize}
+\item \textbf{Platform Secure Boot is fused.} The CPU's security processor
+  reports \code{fused\_part = 1}. Under AMD Platform Secure Boot, the security
+  processor checks the firmware's signature against a key hash burned into the
+  chip before any x86 code runs, and the fuses cannot be
+  reset~\cite{ioactive,sth}. A patched BIOS would simply not start.
+\item \textbf{The flash chip is guarded.} \code{rom\_armor\_enforced = 1}:
+  writes to the BIOS chip go through the security processor, so software
+  cannot write a modified image. Only an external programmer clipped to the
+  board could restore the original.
+\item \textbf{The code is closed.} AMD's platform initialization code (AGESA)
+  and Lenovo's firmware are proprietary. AMD's open replacement, openSIL, is a
+  proof of concept on a server reference board today and does not cover this
+  laptop~\cite{opensil}.
+\end{itemize}
+
+The security model is sound in itself: it stops malware from implanting
+itself into firmware. The problem is that it puts every fix in one vendor's
+queue, even when the owner has found the bug, measured it and demonstrated
+the fix.
+
+% ---------------------------------------------------------------------------
+\section{The case for open firmware that updates safely}
+
+The fix for this bug is probably a few lines in the boot path: the code that
+syncs the TSCs after S3 resume already works. Only Lenovo can make that change
+today, and owners have reported it on Lenovo's forum and by email. Meanwhile
+every owner of this model runs a clock that is wrong on every cold boot. Open
+firmware would change who can find and fix bugs like this. It does not have
+to make firmware less safe.
+
+\subsection{``Open'' does not mean ``unsigned'' or ``flash it yourself''}
+
+The usual objection is that open firmware means owners flashing random ROMs
+and bricking laptops. That mixes up two things:
+\begin{itemize}
+\item \textbf{Who can read and rebuild the source.} This is what ``open''
+  means here.
+\item \textbf{Who can sign a build the machine will accept.} This can stay
+  with the vendor.
+\end{itemize}
+
+AMD Platform Secure Boot and Lenovo's signing keys can stay exactly as they
+are. The vendor still builds, signs and ships every update. The difference is
+that the source is published and the build is reproducible. Anyone can then
+check that the signed binary matches the source, and anyone can find a bug,
+write the patch and send it to the vendor. The vendor still decides what
+ships. Linux distributions already work this way with signed kernels under
+Secure Boot.
+
+\subsection{What ``doesn't brick the device'' needs, and where it already
+exists}
+
+Lenovo's own BIOS updates are safe because of the delivery mechanism, not
+because the source is closed. Every part of that mechanism already exists in
+open form (Table~\ref{tab:safety}).
+
+\begin{table}[ht]
+\centering
+\small
+\begin{tabularx}{\textwidth}{@{}>{\raggedright\arraybackslash}p{3.3cm} L L@{}}
+\toprule
+Safety property & How it works & Open implementation in use today \\
+\midrule
+Only vendor-signed images are accepted
+  & The update is checked against a key in firmware before it is written
+  & Chromebook verified boot checks each firmware copy's signature with a key
+    in the read-only boot stub~\cite{chromium}; Dasharo supports verified boot
+    and signed releases~\cite{dasharo} \\
+\addlinespace
+A failed update cannot leave the machine unbootable
+  & A read-only recovery region plus two copies of the writable firmware (A/B)
+  & Chromebooks: ``The writable portion of the firmware should exist in two
+    copies. In the event the first copy is corrupt, the device can boot
+    normally off the second copy.''~\cite{chromium} \\
+\addlinespace
+Updates are applied by the firmware, not by a flashing tool in the OS
+  & UEFI capsule update: the OS stages the image and the firmware applies it
+    on the next boot
+  & fwupd calls the UEFI \code{UpdateCapsule} service~\cite{lvfs}; Dasharo
+    ships capsule updates~\cite{dasharo} \\
+\addlinespace
+Owners get updates without Windows or vendor tools
+  & A signed catalog and signed update files
+  & The LVFS, used by over one hundred vendors, signs each capsule, and fwupd
+    installs it on Linux~\cite{fwupd,lvfs} \\
+\addlinespace
+Anyone can check the binary against the source
+  & Reproducible builds
+  & Dasharo documents how to verify signatures and reproduce its
+    builds~\cite{dasharo} \\
+\bottomrule
+\end{tabularx}
+\caption{The properties that make a firmware update safe, and open
+implementations of each.}
+\label{tab:safety}
+\end{table}
+
+None of this is experimental:
+\begin{itemize}
+\item Every Chromebook ships \textbf{coreboot}~\cite{coreboot} with an A/B
+  firmware layout and a read-only recovery path, on millions of devices.
+\item \textbf{Dasharo} (3mdeb) ships coreboot with EDK~II UEFI on laptops sold
+  by NovaCustom and others, with fwupd and capsule updates~\cite{dasharo}.
+\item Lenovo already publishes firmware for many ThinkPad models on the
+  \textbf{LVFS}. Legion models are generally not there, so Linux owners of
+  this laptop cannot even install a BIOS update without Windows or a USB tool.
+\end{itemize}
+
+\subsection{What blocks this on AMD laptops today}
+
+The part of the firmware that holds this bug is the CPU and platform
+initialization code: AMD's AGESA, integrated by Insyde and Lenovo. That code
+is closed.
+
+AMD's open replacement, \textbf{openSIL}, is public and MIT-licensed, but its
+repository describes it as a proof of concept for a server reference board
+(Genoa), ``NOT for use in production firmware''~\cite{opensil}. It has no
+client (laptop) CPU support. Press reports say client support is planned for
+a future CPU generation; AMD has not shipped it. Until then, even a vendor
+willing to open its firmware could not open the part that syncs the TSCs.
+
+So the realistic path has two steps:
+\begin{enumerate}
+\item \textbf{Now:} vendors publish the platform code they own, ship through
+  the LVFS, and test cold boot on Linux.
+\item \textbf{When openSIL covers client CPUs:} laptops built on coreboot or
+  EDK~II with openSIL, vendor-signed, with A/B recovery, delivered as
+  capsules. A bug like this one could then be found, fixed and reviewed in
+  public, and still reach owners only through a signed, recoverable update.
+\end{enumerate}
+
+\subsection{Why it matters beyond one laptop}
+
+This bug shows what closed firmware costs:
+\begin{itemize}
+\item \textbf{The hardware is fine and the fix is known.} The same firmware
+  already syncs the TSCs correctly on resume.
+\item \textbf{Windows hides the problem.} Windows resyncs the TSCs itself, so
+  a vendor that tests only on Windows never sees it.
+\item \textbf{Only the vendor can fix it, and the vendor has little reason
+  to.} Owners are left with a pre-boot workaround (tscsync) that has to be
+  maintained, signed and installed outside the firmware.
+\end{itemize}
+
+With open source, reproducible builds and vendor signing, the person who
+found the bug could have sent the fix, and the vendor could have reviewed,
+signed and shipped it through the same safe update path it uses today.
+
+% ---------------------------------------------------------------------------
+\section{Recommendations}
+
+\subsection{For Lenovo and other vendors}
+\begin{enumerate}
+\item \textbf{Fix the cold-boot TSC sync.} Apply the same sync between CPU~0
+  and the other cores that the S3 resume path already does, before handing
+  off to the operating system. The kernel's check
+  (\code{check\_tsc\_sync\_source}) should pass on every core with no help
+  from the OS.
+\item \textbf{Test cold boot on Linux.} A single boot of a current Fedora or
+  Ubuntu live image shows \code{TSC warp} in the kernel log. Windows hides the
+  bug because it resyncs the TSCs itself.
+\item \textbf{Ship firmware through the LVFS} for consumer lines too, not
+  only ThinkPads, so Linux owners get fixes through fwupd.
+\item \textbf{Publish the platform code you own}, with reproducible builds,
+  and move to openSIL when AMD supports client CPUs.
+\end{enumerate}
+
+\subsection{For owners of affected machines}
+\begin{itemize}
+\item \textbf{Check} the kernel log of the current boot:\\
+  \code{journalctl -k -b | grep -iE \textquotesingle tsc|clocksource\textquotesingle}\\
+  \code{Marking TSC unstable} or \code{TSC warp}, followed by
+  \code{Switched to clocksource hpet}, means you are affected.
+\item \textbf{Report it} to the vendor with the model, BIOS version and that
+  log line. A workaround does not replace a firmware fix.
+\item \textbf{Work around it} with tscsync~\cite{tscsync}: install it in
+  measure mode first, then switch to sync mode. It writes nothing to firmware
+  and disables itself if a boot fails.
+\item \textbf{After every BIOS update}, switch back to measure mode for one
+  cold boot. If every core shows \code{OK}, the vendor has fixed the bug and
+  tscsync can be removed.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\appendix
+\section{Methodology and data}
+
+All data and scripts are in the tscsync repository under
+\code{docs/report/}~\cite{tscsync}.
+\begin{itemize}
+\item \textbf{Boot history} (\code{data/boots.csv}, written by
+  \code{extract-boots.sh}): one row per boot in the systemd journal of this
+  machine, every boot since installation. For each boot: the kernel version,
+  the warp from \code{Measured N cycles TSC warp between CPUs}, systemd's
+  firmware time from \code{Startup finished in \dots{} (firmware)} (which
+  systemd reads from the ACPI FPDT), the tscsync version and mode, and
+  whether the kernel kept the TSC.
+\item \textbf{Warp against firmware time} (\code{analyze.py}): an ordinary
+  least-squares fit of the warp against the firmware time over every unfixed
+  boot that logged both (\fitpoints{} boots). It writes the plotted points to
+  \code{data/warp-vs-firmware.csv}.
+\item \textbf{Per-core offsets:} measured before Linux starts by tscsync in
+  measure mode, and after boot by \code{tools/tscprobe.c}. Both use a
+  paired-read test between CPU~0 and each other core, giving the offset in
+  cycles and its direction.
+\item \textbf{Resume path:} the kernel's TSC check on S3 resume, with and
+  without the workaround.
+\item \textbf{Limits:} one machine and one BIOS version (RLCN32WW). The other
+  models are listed from owner reports and were not measured here.
+\end{itemize}
+
+% ---------------------------------------------------------------------------
+\begin{thebibliography}{99}
+\small
+
+\bibitem{tscsync}
+H.~Ishraq, \emph{tscsync: fix TSC warp between CPUs before Linux boots},
+\url{https://github.com/Zanasin/tscsync} (see \code{docs/DESIGN.md} and
+\code{docs/HARDWARE.md}).
+
+\bibitem{tscsync-c}
+Linux kernel, \code{arch/x86/kernel/tsc\_sync.c},
+\url{https://github.com/torvalds/linux/blob/master/arch/x86/kernel/tsc_sync.c}.
+
+\bibitem{lkml}
+Linux kernel mailing list, discussion of TSC synchronization on AMD CPUs
+without \code{TSC\_ADJUST}, August 2022,
+\url{https://lkml.iu.edu/hypermail/linux/kernel/2208.3/00630.html}.
+
+\bibitem{bcdedit}
+Microsoft, \emph{BCDEdit /set} (\code{tscsyncpolicy}),
+\url{https://learn.microsoft.com/en-us/windows-hardware/drivers/devtest/bcdedit--set}.
+
+\bibitem{lenovo-forum}
+Lenovo Community, \emph{1 second TSC warp on IdeaPad 5 2-in-1 14AHP9 due to
+bad initialization in BIOS forces HPET fallback},
+\url{https://forums.lenovo.com/t5/Other-Linux-Discussions/1-second-TSC-warp-on-IdeaPad-5-2-in-1-14AHP9-due-to-bad-initialization-in-BIOS-forces-HPET-fallback/m-p/10021248}.
+
+\bibitem{ioactive}
+IOActive, \emph{Exploring AMD Platform Secure Boot},
+\url{https://www.ioactive.com/exploring-amd-platform-secure-boot/}.
+
+\bibitem{sth}
+ServeTheHome, \emph{AMD PSB vendor locks EPYC CPUs for enhanced security at a
+cost},
+\url{https://www.servethehome.com/amd-psb-vendor-locks-epyc-cpus-for-enhanced-security-at-a-cost/}.
+
+\bibitem{opensil}
+AMD, \emph{openSIL}, \url{https://github.com/openSIL/openSIL}.
+
+\bibitem{coreboot}
+coreboot documentation, \url{https://doc.coreboot.org/}.
+
+\bibitem{dasharo}
+3mdeb, \emph{Dasharo documentation}, \url{https://docs.dasharo.com/}.
+
+\bibitem{chromium}
+The Chromium Projects, \emph{Firmware boot and recovery},
+\url{https://www.chromium.org/chromium-os/chromiumos-design-docs/firmware-boot-and-recovery/}.
+
+\bibitem{fwupd}
+fwupd, \url{https://fwupd.org/}.
+
+\bibitem{lvfs}
+Linux Vendor Firmware Service, \emph{Introduction},
+\url{https://lvfs.readthedocs.io/en/latest/intro.html}.
+
+\end{thebibliography}
+
+\end{document}

@@ -1,1 +1,4 @@
 build/
+docs/report/*.aux
+docs/report/*.log
+docs/report/*.out
