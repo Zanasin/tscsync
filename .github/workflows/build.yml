@@ -1,0 +1,17 @@
+name: build
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build
+        run: make all test
+      - name: Check release build has no test code
+        run: "! strings -el build/tscsync.efi | grep -q 'TEST BUILD'"
+      - name: Check shell scripts
+        run: for f in scripts/*.sh scripts/tscsync-status boot/tscsync-report tools/idle-bench.sh vmtest/*.sh; do bash -n "$f"; done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tscsync-efi-unsigned
+          path: build/tscsync.efi

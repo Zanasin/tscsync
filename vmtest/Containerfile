@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: MIT
+FROM registry.fedoraproject.org/fedora:44
+RUN dnf -y install qemu-system-x86-core edk2-ovmf grub2-efi-x64-modules grub2-tools \
+	grub2-tools-minimal grub2-tools-extra dosfstools mtools && dnf clean all

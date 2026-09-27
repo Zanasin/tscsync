@@ -1,0 +1,41 @@
+# SPDX-License-Identifier: MIT
+# tscsync: re-sync CPU TSCs before Linux boots.
+# Installed by tscsync scripts/install.sh; remove with scripts/uninstall.sh.
+# https://github.com/Zanasin/tscsync
+#
+# grubenv controls:
+#   tscsync_enable=1                     run tscsync.efi on this boot
+#   tscsync_mode=mode=measure|mode=sync  measure is read-only (default)
+#   tscsync_pending                      hang guard, see below
+#
+# Hang guard: tscsync_pending is set to 1 before tscsync.efi runs and is
+# cleared by tscsync-report.service once Linux has booted. If a boot never
+# reaches Linux, the next boot finds tscsync_pending=1, skips tscsync.efi
+# and turns it off, so the machine always recovers after one power cycle.
+function tscsync_save {
+  # Write to the same grubenv that Fedora's 00_header loads.
+  if [ -n "${config_directory}" ]; then
+    save_env -f "${config_directory}/grubenv" "$@"
+  else
+    save_env "$@"
+  fi
+}
+
+if [ "${tscsync_enable}" = "1" ]; then
+  if [ "${tscsync_pending}" = "1" ]; then
+    echo "tscsync: previous boot did not reach Linux; disabling tscsync"
+    set tscsync_enable=0
+    set tscsync_pending=0
+    tscsync_save tscsync_enable tscsync_pending
+  else
+    set tscsync_pending=1
+    tscsync_save tscsync_pending
+    insmod part_gpt
+    insmod fat
+    insmod chain
+    if search --no-floppy --fs-uuid --set=tscsync_esp @ESP_UUID@; then
+      chainloader (${tscsync_esp})/EFI/tscsync/tscsync.efi ${tscsync_mode}
+      boot
+    fi
+  fi
+fi

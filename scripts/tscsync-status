@@ -1,0 +1,29 @@
+#!/usr/bin/bash
+# SPDX-License-Identifier: MIT
+# Show whether the TSC is in use and what tscsync.efi reported this boot.
+cs=/sys/devices/system/clocksource/clocksource0
+
+echo "current clocksource : $(cat $cs/current_clocksource)"
+echo "available           : $(cat $cs/available_clocksource)"
+echo "kernel TSC check    :"
+journalctl -k -b 0 -q --no-pager 2>/dev/null |
+	grep -E 'TSC warp|Marking TSC unstable|clocksource: Switched to clocksource' |
+	sed 's/^/  /'
+echo "settings            :"
+if [ -r /etc/tscsync.conf ]; then
+	# shellcheck source=/dev/null
+	. /etc/tscsync.conf
+	if env=$("$EDITENV" "$GRUBENV" list 2>/dev/null); then
+		grep '^tscsync' <<<"$env" | sed 's/^/  /' || echo "  (tscsync not configured)"
+	else
+		echo "  (run with sudo to read grubenv)"
+	fi
+else
+	echo "  (tscsync is not installed)"
+fi
+echo "tscsync.efi report  :"
+if [ -r /run/tscsync-result.txt ]; then
+	sed 's/^/  /' /run/tscsync-result.txt
+else
+	echo "  none this boot"
+fi
