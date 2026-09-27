@@ -1,6 +1,6 @@
 # tscsync
 
-Fix **"TSC warp between CPUs"** on AMD machines before Linux boots, so the
+Fixes "TSC warp between CPUs" on AMD machines before Linux boots, so the
 kernel keeps the fast TSC clocksource instead of falling back to HPET.
 
 ```
@@ -11,8 +11,8 @@ clocksource: Switched to clocksource hpet
 If your kernel log shows those lines on every boot, your firmware (BIOS) is
 handing over with the CPU cores' Time Stamp Counters out of sync. tscsync is a
 small UEFI program that runs from GRUB just before Linux, measures every
-core's TSC, moves the lagging ones forward until they agree, and proves the
-result with the same test the kernel uses.
+core's TSC, moves the lagging ones forward until they agree, and then checks
+the result with a test modelled on the kernel's own.
 
 On a Legion Pro 5 16ADR10 this turned a 5.2-billion-cycle warp (about 2 s) on
 every boot into cores that agree to within about ±10 cycles, and Linux kept
@@ -40,7 +40,7 @@ You do **not** need it on Intel CPUs with `TSC_ADJUST` (the kernel fixes
 those itself), and it cannot help if the warp is caused by something other
 than the boot-time offset.
 
-## Why it matters
+## Why bother
 
 With HPET, every clock read goes to a slow timer chip (about 1.2 µs instead of
 tens of nanoseconds). The kernel and desktop read the clock tens of thousands
@@ -70,21 +70,21 @@ The whole run takes about 0.5 s. Details and measurements:
 
 ## Safety
 
-- **Nothing permanent is written.** No flash, NVRAM or firmware settings. The
-  TSC registers it changes reset at power-off; its report is a RAM-only EFI
+- It writes nothing permanent: no flash, NVRAM or firmware settings. The TSC
+  registers it changes reset at power-off, and its report is a RAM-only EFI
   variable.
-- **Measure mode first.** `install.sh` enables read-only measure mode; you
-  switch to sync only after seeing the numbers.
-- **Forward-only.** Large corrections only move counters forward. Backward
-  steps are capped at 1 million cycles (about 0.4 ms) for fine-tuning.
-- **Hang guard.** If a boot never reaches Linux, the next boot skips tscsync
-  and turns it off automatically.
-- **Secure Boot stays on.** It is signed with a Machine Owner Key (MOK) you
-  already have or create once.
-- **Fails safe.** If anything goes wrong, Linux falls back to HPET exactly as
+- `install.sh` starts in read-only measure mode. You switch to sync only after
+  you've seen the numbers.
+- Large corrections only move counters forward. Backward steps are capped at
+  1 million cycles (about 0.4 ms) and only used for fine-tuning.
+- If a boot never reaches Linux, the next boot skips tscsync and turns it off
+  (the hang guard).
+- Secure Boot stays on. The binary is signed with a Machine Owner Key (MOK)
+  you already have or create once.
+- If anything goes wrong, Linux falls back to HPET, the same as it would
   without tscsync.
-- **Refuses unfamiliar hardware** in sync mode (CPUs with `TSC_ADJUST`,
-  without an invariant TSC, or outside the supported list) unless you opt in.
+- In sync mode it refuses unfamiliar hardware (CPUs with `TSC_ADJUST`, without
+  an invariant TSC, or outside the supported list) unless you opt in.
 
 This is unofficial, low-level software. Read the code and use it at your own
 risk; the MIT license applies.
@@ -143,11 +143,11 @@ current clocksource : tsc
 
 ## Recovery
 
-- **A boot hangs in tscsync** (text stops for 30 s): hold power for 10 s and
-  power on. The hang guard skips tscsync and disables it.
-- **Anything else odd:** `sudo scripts/set-mode.sh off` or
+- If a boot hangs in tscsync (the text stops for 30 s), hold power for 10 s
+  and power on again. The hang guard skips tscsync and disables it.
+- For anything else odd, run `sudo scripts/set-mode.sh off` or
   `sudo scripts/uninstall.sh`.
-- **GRUB unusable** (should not be possible): boot a live USB, mount the
+- If GRUB itself becomes unusable (it shouldn't), boot a live USB, mount the
   partition holding GRUB's config and delete `custom.cfg` there.
 
 ## After a BIOS update
@@ -166,6 +166,6 @@ is.
 ## License
 
 MIT, see [LICENSE](LICENSE). Firmware vendors are welcome to use the approach
-or the code in their own firmware; fixing it there is the real solution.
+or the code in their own firmware, which is where this should be fixed.
 
 gnu-efi, downloaded at build time, is under its own BSD-style license.

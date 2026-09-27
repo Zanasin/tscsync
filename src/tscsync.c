@@ -45,7 +45,7 @@
 #ifndef TSCSYNC_TEST
 #define TOLERANCE		10	/* cycles: target when the tick is 1 */
 #else
-#define TOLERANCE		100	/* VM test build: KVM TSC writes jitter by 50-200 cycles */
+#define TOLERANCE		50	/* VM test build: KVM TSC writes jitter by 50-200 cycles */
 #endif
 #ifndef TSCSYNC_TEST
 #define NUDGE			8	/* cycles: step when only the warp test fails */
@@ -66,10 +66,21 @@
 #define SPREAD_MAX		(1000000LL)	/* APs "agree" if within this; then use the median AP */
 #define MAX_FORWARD		(150000000000LL) /* ~60 s at 2.5 GHz */
 #define MAX_BACKWARD		(1000000LL)	/* ~0.4 ms */
+#ifndef TSCSYNC_TEST
 #define MAX_ITER		12
+#else
+#define MAX_ITER		30	/* VM test build: more tries to get through KVM jitter */
+#endif
 #define MAX_CPUS		512
 #define MAX_SHORTFALL		5000	/* cycles: sane bound for a write's landing error */
-#define WARP_ITERS		20000	/* strictly alternating, so every round is cross-core */
+#define WARP_ITERS		20000	/* verify: strictly alternating, so every round is cross-core */
+/*
+ * Rounds for the accept-or-nudge check during corrections. Kept equal to
+ * WARP_ITERS: in VM tests a 5000-round gate accepted cores whose rare warps
+ * (1-3 per 20000 rounds) the verify pass then caught. Costs ~13 ms per
+ * corrected AP.
+ */
+#define WARP_GATE_ITERS		WARP_ITERS
 #define AP_IDLE_SPINS		2000000000ULL
 #define BSP_SPINS		200000000ULL
 #define EDGE_SPINS		1000000ULL
@@ -243,11 +254,11 @@ static BOOLEAN verify_ok(INT64 off_q)
 	return tick > 1 ? off_q == 0 : abs64(off_q) <= VERIFY_LIMIT;
 }
 
-static void warp_loop(BOOLEAN is_bsp)
+static void warp_loop(BOOLEAN is_bsp, UINTN iters)
 {
 	UINT64 me = is_bsp ? 0 : 1;
 
-	for (UINTN i = 0; i < WARP_ITERS && !wb.aborted; i++) {
+	for (UINTN i = 0; i < iters && !wb.aborted; i++) {
 		UINT64 spins = 0;
 
 		while (wb.turn != me) {
@@ -303,7 +314,7 @@ static VOID EFIAPI ap_main(VOID *arg)
 			if (m->cmd == CMD_ADJUST)
 				adjust_tsc(m->delta);
 			else if (m->cmd == CMD_WARPTEST)
-				warp_loop(FALSE);
+				warp_loop(FALSE, (UINTN)m->delta);	/* round count */
 			barrier();
 			m->cmd_ack = c;
 			continue;
@@ -390,12 +401,12 @@ static BOOLEAN ap_command(UINT64 cmd, INT64 delta)
 }
 
 /* The kernel's check, BSP against the current AP. */
-static BOOLEAN warp_test(struct result *r)
+static BOOLEAN warp_test(struct result *r, UINTN iters)
 {
 	ZeroMem((void *)&wb, sizeof(wb));
 	barrier();
-	UINT64 seq = ap_send(CMD_WARPTEST, 0);
-	warp_loop(TRUE);
+	UINT64 seq = ap_send(CMD_WARPTEST, (INT64)iters);
+	warp_loop(TRUE, iters);
 	BOOLEAN done = ap_wait(seq);
 
 	r->warps_bsp = wb.warps_bsp;
@@ -566,7 +577,7 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 				want = -r->off;
 			} else {
 				/* In range: accept only if the kernel-style test agrees. */
-				if (!warp_test(r)) {
+				if (!warp_test(r, WARP_GATE_ITERS)) {
 					note = u"warp test timeout";
 					break;
 				}
@@ -589,7 +600,7 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 			note = u"did not converge";
 	}
 	if (measured && warp) {
-		if (!warp_test(r))
+		if (!warp_test(r, WARP_ITERS))
 			note = u"warp test timeout";
 		if (!warp_clean(r))
 			*ok = FALSE;
@@ -637,7 +648,7 @@ static BOOLEAN bump_bsp(EFI_MP_SERVICES_PROTOCOL *mp, UINTN ref_idx)
 			if (!in_sync(r.off)) {
 				want = r.off;
 			} else {
-				if (!warp_test(&r)) {
+				if (!warp_test(&r, WARP_GATE_ITERS)) {
 					note = u"warp test timeout";
 					break;
 				}

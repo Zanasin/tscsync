@@ -22,17 +22,18 @@ firmware bugs go unnoticed in vendor testing.
 
 Measured on the machine that motivated this project:
 
-- **Every boot.** All 71 boots with a complete kernel log showed a warp.
-- **Proportional to firmware time.** Across 62 boots, warp = 833.29 M cycles
-  per second of FPDT `bootloader_launch` time (R² = 0.999999, intercept
-  −0.4 ms). The FPDT time is measured with the BSP's TSC, so at loader launch
-  the BSP's TSC read 3/4 of the APs'. A scale error, not a fixed delay.
-- **Only the BSP is off.** Measured from GRUB, all 31 APs agreed with each
-  other within ~40 cycles across both CCDs and were 5.2–5.7 billion cycles
-  ahead of the BSP.
-- **Offsets survive into Linux unchanged**, so fixing them in GRUB is enough.
-- **The S3 resume path is correct.** After resume all cores agree, and the
-  kernel's re-check passes.
+- All 71 boots with a complete kernel log showed a warp.
+- The warp is proportional to time spent in firmware. Across 62 boots,
+  warp = 833.29 M cycles per second of FPDT `bootloader_launch` time
+  (R² = 0.999999, intercept −0.4 ms). FPDT time is measured with the BSP's
+  TSC, so at loader launch the BSP's TSC read 3/4 of the APs'. That's a scale
+  error; a fixed delay would give the same warp on every boot.
+- Measured from GRUB, all 31 APs agreed with each other within ~40 cycles
+  across both CCDs, and all were 5.2–5.7 billion cycles ahead of the BSP. Only
+  the BSP is off.
+- The offsets survive into Linux unchanged, so fixing them in GRUB is enough.
+- The S3 resume path is fine: after resume all cores agree, and the kernel's
+  re-check passes.
 
 ## Algorithm
 
@@ -90,7 +91,8 @@ sensitive as the kernel's spinlock-based test.
 | `ACT_THRESHOLD` | 200 cycles | Survey offsets below this are treated as noise. |
 | `MAX_BACKWARD` | 1,000,000 cycles | Largest backward step (fine-tuning only). |
 | `MAX_FORWARD` | 1.5e11 cycles | Largest forward step (~60 s at 2.5 GHz); larger offsets are treated as implausible. |
-| `WARP_ITERS` | 20,000 | Warp-test rounds per AP; about 13 ms per AP. |
+| `WARP_ITERS` | 20,000 | Warp-test rounds per AP in the verify pass; about 13 ms per AP. |
+| `WARP_GATE_ITERS` | 20,000 | Warp-test rounds when accepting a corrected core. A shorter gate saves ~10 ms per corrected core but gives up margin; kept at full length. |
 
 If the TSC reads in coarse ticks at firmware time (detected at start), a core
 counts as in sync only at an exact zero-tick offset.
@@ -109,7 +111,7 @@ which tscsync moves forward.
   there, so `grub.cfg` is never regenerated or edited.
 - The hook chainloads `EFI/tscsync/tscsync.efi` with the mode as load options.
   When it returns, GRUB continues normally.
-- **Hang guard:** the hook sets `tscsync_pending=1` in grubenv before running
+- Hang guard: the hook sets `tscsync_pending=1` in grubenv before running
   the tool; `tscsync-report.service` clears it once Linux is up. A boot that
   never reaches Linux leaves it set, so the next boot skips the tool and sets
   `tscsync_enable=0`.
@@ -128,7 +130,9 @@ podman container, using the real `custom.cfg` hook:
 - the hang guard.
 
 KVM's TSC writes jitter by 50–200 cycles, so the test build uses looser
-tolerances; final precision can only be confirmed on real hardware. Guest TSC
+tolerances (±50-cycle target, 30 iterations); with a looser ±100 target,
+cores parked near the edge occasionally failed verify. Final precision can
+only be confirmed on real hardware. Guest TSC
 behaviour in KVM is also only faithful when the host's own TSC is stable.
 
 ## Version history
