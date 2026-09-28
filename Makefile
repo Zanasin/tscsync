@@ -25,10 +25,11 @@ LDFLAGS_EFI := -nostdlib --warn-common --no-undefined --fatal-warnings --build-i
 EFI_SECTIONS := -j .text -j .sdata -j .data -j .dynamic -j .rodata -j .rel \
 	-j .rela -j .rel.* -j .rela.* -j .rel* -j .rela* -j .areloc -j .reloc
 
-all: $(B)/tscsync.efi $(B)/tscprobe
+# tscsync.efi: GRUB application; tscsync-driver.efi: systemd-boot driver (same code)
+all: $(B)/tscsync.efi $(B)/tscsync-driver.efi $(B)/tscprobe
 
 # VM-only test build: deliberately desyncs cores before syncing them.
-test: $(B)/tscsync-test.efi
+test: $(B)/tscsync-test.efi $(B)/tscsync-test-driver.efi
 
 $(B)/gnu-efi.tar.gz:
 	mkdir -p $(B)
@@ -49,6 +50,10 @@ $(B)/%.so: $(B)/%.o
 
 $(B)/%.efi: $(B)/%.so
 	objcopy $(EFI_SECTIONS) -O efi-app-x86_64 --subsystem=10 $< $@
+
+# Boot-services driver: systemd-boot only starts drivers from EFI/systemd/drivers.
+$(B)/%-driver.efi: $(B)/%.so
+	objcopy $(EFI_SECTIONS) -O efi-bsdrv-x86_64 --subsystem=11 $< $@
 
 $(B)/tscprobe: tools/tscprobe.c
 	mkdir -p $(B)

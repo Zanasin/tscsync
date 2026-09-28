@@ -1,8 +1,9 @@
 # Secure Boot
 
-With Secure Boot on, GRUB only runs EFI programs that are signed by a key the
-firmware or shim trusts. tscsync is signed with a Machine Owner Key (MOK),
-the same kind of key used for out-of-tree kernel modules such as NVIDIA's.
+With Secure Boot on, the boot loader only runs EFI programs that are signed
+by a key the firmware or shim trusts. With GRUB, tscsync is usually signed
+with a Machine Owner Key (MOK), the same kind of key used for out-of-tree
+kernel modules such as NVIDIA's. With systemd-boot, see the section below.
 
 ## If you already have a MOK
 
@@ -15,8 +16,10 @@ kernel modules and uses the first one it finds:
 | Ubuntu / Debian (DKMS, newer) | `/var/lib/dkms/mok.key` | `/var/lib/dkms/mok.pub` |
 | Ubuntu / Debian (shim-signed) | `/var/lib/shim-signed/mok/MOK.priv` | `/var/lib/shim-signed/mok/MOK.der` |
 
-It checks that the certificate is actually enrolled (by fingerprint, via
-`mokutil --list-enrolled`) before installing. To use another key:
+It also finds `sbctl`'s db key (`/var/lib/sbctl/keys/db/db.key`). It checks
+that the certificate is actually enrolled (by fingerprint, as a MOK via
+`mokutil --list-enrolled`, or in the firmware's db via `mokutil --db`) before
+installing. To use another key:
 
 ```sh
 sudo scripts/install.sh --key /path/to/key.pem --cert /path/to/cert.der
@@ -48,12 +51,22 @@ If you manage your own Secure Boot keys with `sbctl`, GRUB checks images
 against the firmware's `db` instead of MOKs. Install unsigned, then sign the
 installed file with sbctl:
 
+The installer finds sbctl's key and signs with it. To sign yourself instead:
+
 ```sh
 sudo scripts/install.sh --no-sign
-sudo sbctl sign -s /boot/efi/EFI/tscsync/tscsync.efi    # adjust the ESP path
+sudo sbctl sign -s /boot/efi/EFI/tscsync/tscsync.efi         # GRUB (adjust the ESP path)
+sudo sbctl sign -s /efi/EFI/systemd/drivers/tscsyncx64.efi   # systemd-boot
 ```
 
-## If GRUB refuses the tool
+## systemd-boot
+
+systemd-boot loads drivers with the firmware's `LoadImage`, which checks the
+firmware's `db`. A key in `db` (for example from `sbctl`) always works. A
+MOK-only key works only where shim verifies the image, which may not be the
+case; then systemd-boot skips tscsync and boots normally.
+
+## If the boot loader refuses the tool
 
 `tscsync-status` then reports "tscsync.efi did not run on this boot", and the
 boot itself continues normally. Check that the key is enrolled

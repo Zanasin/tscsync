@@ -10,7 +10,8 @@ clocksource: Switched to clocksource hpet
 
 If your kernel log shows those lines on every boot, your firmware (BIOS) is
 handing over with the CPU cores' Time Stamp Counters out of sync. tscsync is a
-small UEFI program that runs from GRUB just before Linux, measures every
+small UEFI program that runs from the boot loader (GRUB or systemd-boot)
+just before Linux, measures every
 core's TSC, moves the lagging ones forward until they agree, and then checks
 the result with a test modelled on the kernel's own.
 
@@ -55,14 +56,16 @@ stay on and confirm the result.
 
 ## How it works
 
-1. GRUB runs `tscsync.efi` before showing its menu.
+1. GRUB runs `tscsync.efi` before showing its menu; systemd-boot loads the
+   same code as a driver (`EFI/systemd/drivers/tscsyncx64.efi`) before its
+   menu.
 2. It asks every core for its TSC through the firmware's MP services and
    measures each core's offset against the boot processor (BSP).
 3. In sync mode it moves counters **forward only**: the BSP catches up to the
    other cores if they are ahead, then every core still lagging catches up to
    the BSP. It repeats until each core is within about 10 cycles.
 4. It verifies every core with a lock-and-compare test like the kernel's
-   `check_tsc_warp()`, stores a report in RAM, and returns to GRUB.
+   `check_tsc_warp()`, stores a report in RAM, and returns to the boot loader.
 5. Linux boots, finds the TSCs in sync and keeps the TSC clocksource.
 
 The whole run takes about 0.6 s. Details and measurements:
@@ -91,12 +94,14 @@ risk; the MIT license applies.
 
 ## Requirements
 
-- x86_64 UEFI system booting Linux with **GRUB** (systemd-boot is not
-  supported yet)
-- GRUB's config directory on ext2/3/4 or FAT (needed for the hang guard)
+- x86_64 UEFI system booting Linux with **GRUB** or **systemd-boot**
+- GRUB: its config directory on ext2/3/4 or FAT (needed for the hang guard)
+- systemd-boot: nothing extra; the settings and the hang guard are small
+  files in `EFI/tscsync/` on the EFI system partition
 - systemd
 - Build tools: `gcc`, `make`, `binutils`, `curl`
-- With Secure Boot: `sbsigntools` and an enrolled MOK
+- With Secure Boot: `sbsigntools` and an enrolled MOK, or your own `sbctl`
+  keys
   ([docs/SECURE-BOOT.md](docs/SECURE-BOOT.md))
 
 ## Quick start
@@ -104,7 +109,7 @@ risk; the MIT license applies.
 ```sh
 git clone https://github.com/Zanasin/tscsync.git
 cd tscsync
-make                               # downloads and verifies gnu-efi, builds build/tscsync.efi
+make                               # downloads and verifies gnu-efi, builds the GRUB and systemd-boot binaries
 sudo scripts/install.sh            # installs in read-only measure mode
 ```
 
@@ -129,11 +134,16 @@ current clocksource : tsc
   RESULT: all APs in sync (Linux should keep the TSC)
 ```
 
+A core marked `UNSURE` passed the warp test, but its offset reading was taken
+over a slower round trip than usual, so tscsync cannot tell whether it is in
+sync. The kernel's own check decides: if `current clocksource` is `tsc`, it
+passed.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
-| `sudo scripts/install.sh` | Detects GRUB, the EFI partition and a signing key, installs in measure mode |
+| `sudo scripts/install.sh` | Detects GRUB or systemd-boot, the EFI partition and a signing key, installs in measure mode |
 | `sudo scripts/set-mode.sh measure\|sync\|off` | Switches mode for the next boot |
 | `tscsync-status` | Clocksource, kernel TSC messages, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
@@ -147,8 +157,10 @@ current clocksource : tsc
   and power on again. The hang guard skips tscsync and disables it.
 - For anything else odd, run `sudo scripts/set-mode.sh off` or
   `sudo scripts/uninstall.sh`.
-- If GRUB itself becomes unusable (it shouldn't), boot a live USB, mount the
-  partition holding GRUB's config and delete `custom.cfg` there.
+- If the boot loader itself becomes unusable (it shouldn't), boot a live USB
+  and mount the partition holding the files. GRUB: delete `custom.cfg` in
+  GRUB's config directory. systemd-boot: delete
+  `EFI/systemd/drivers/tscsyncx64.efi` on the EFI system partition.
 
 ## After a BIOS update
 

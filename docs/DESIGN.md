@@ -37,7 +37,9 @@ Measured on the machine that motivated this project:
 
 ## Algorithm
 
-tscsync runs as a UEFI application launched by GRUB before the menu.
+tscsync runs from the boot loader before its menu: as a UEFI application
+launched by GRUB, or as a boot-services driver loaded by systemd-boot (see
+Boot integration).
 
 ### Measuring an offset
 
@@ -54,6 +56,17 @@ offset = a - (t0 + t1) / 2
 It keeps the rounds with the smallest round trip and averages their offsets,
 which resolves offsets finer than one TSC tick. Interrupts are masked on the
 BSP (TPL_HIGH_LEVEL) while measuring.
+
+The formula assumes both legs of a round trip take equally long. When one leg
+is delayed, the estimate is skewed by up to half the extra delay. On an
+IdeaPad 5 2-in-1 14AHP9 the same APs read 0 to 8 cycles at a round trip of
+~340 cycles, and -28 to -42 at ~500–530 cycles, with no write in between;
+the kernel accepted them. So read-only passes re-measure an offset that is
+outside the limit but no larger than one round trip (up to 4 times) and keep
+the fastest round trip. If it is still outside the limit, the warp test is
+clean, and the round trip was slower than the fastest one seen for that AP
+this boot by at least twice the offset, the AP is reported as `UNSURE`
+rather than `BAD`: tscsync cannot tell, and the kernel's check decides.
 
 ### Correcting
 
@@ -118,19 +131,32 @@ measures it with the BSP's TSC, which tscsync moves forward.
   `system-update.target`: offline-update boots (PackageKit, dnf offline)
   never reach `multi-user.target`, and without this, one such boot was
   enough to disable tscsync.
+- systemd-boot has no hook like `custom.cfg`, but before its menu it loads
+  every `\EFI\systemd\drivers\*x64.efi` that is a boot-services driver, and
+  unloads one that returns `EFI_ABORTED` without logging an error. The same
+  code is built as such a driver (`build/tscsync-driver.efi`, installed as
+  `tscsyncx64.efi`); it detects that it was loaded as a driver and returns
+  `EFI_ABORTED`. It gets no load options and there is no grubenv, so its
+  state is three small files in `\EFI\tscsync` on the same ESP:
+  `options` (e.g. `mode=sync`, written by `set-mode.sh`), `disabled`
+  (`set-mode.sh off`, or the hang guard) and `pending` (the hang guard:
+  created before any work, deleted by `tscsync-report.service`; found at the
+  next boot, it creates `disabled`). If `pending` cannot be written, the
+  driver does nothing.
 - The report is stored in the volatile EFI variable
   `TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000` and copied to
   `/run/tscsync-result.txt` at boot.
 
 ## Testing
 
-`vmtest/run.sh` boots GRUB and tscsync in QEMU/OVMF VMs (8 vCPUs) inside a
-podman container, using the real `custom.cfg` hook:
+`vmtest/run.sh` boots GRUB and tscsync, then systemd-boot and the tscsync
+driver, in QEMU/OVMF VMs (8 vCPUs) inside a podman container, using the real
+`custom.cfg` hook and systemd-boot's own driver loading:
 
 - release build in measure mode, and in sync mode where sync must be refused;
 - test build (`make test`) that first creates a warp, in three patterns:
   BSP behind all APs, APs behind the BSP, and mixed;
-- the hang guard.
+- the hang guard, for both boot loaders, and the systemd-boot state files.
 
 KVM's TSC writes jitter by 50–200 cycles, so the test build uses looser
 tolerances (±50-cycle target, 30 iterations); with a looser ±100 target,
@@ -149,3 +175,4 @@ behaviour in KVM is also only faithful when the host's own TSC is stable.
 | 1.4 | Separate verify limit (±25) to stop false "out of sync" reports |
 | 1.5 | ~0.5 s boot cost instead of ~5 s; plausibility filter on the landing-error estimate |
 | 2.0 | General release: any warp pattern (forward-only), AMD/Hygon Zen families, distro-independent installer, warp-test gate on AP corrections |
+| 2.1 | systemd-boot support (driver build, state files on the ESP); re-measure small misses in read-only passes and report `UNSURE` instead of `BAD` when the offset is within the measurement error; hang guard also cleared on offline-update boots |

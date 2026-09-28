@@ -8,9 +8,18 @@
  * falls back to the much slower HPET clock. CPUs with IA32_TSC_ADJUST let
  * the kernel repair this itself; AMD/Hygon Zen CPUs lack TSC_ADJUST, so the
  * only repair is writing the TSC MSR (0x10) before the kernel's check runs,
- * which is what Windows does at every boot. tscsync does that from GRUB.
+ * which is what Windows does at every boot. tscsync does that from the boot
+ * loader, before Linux starts.
  *
- * Modes (GRUB passes them as load options):
+ * Boot loaders:
+ *   GRUB          runs tscsync.efi as an application from custom.cfg and
+ *                 passes the mode as load options; the hang guard is in grubenv.
+ *   systemd-boot  loads the driver build (tscsyncx64.efi) from
+ *                 \EFI\systemd\drivers before its menu, with no load options;
+ *                 the mode and the hang guard are files in \EFI\tscsync
+ *                 (see sdboot_setup()).
+ *
+ * Modes:
  *   mode=measure  (default) read-only: report each AP's offset, write nothing
  *   mode=sync     1. survey all APs (read-only)
  *                 2. if some AP is ahead of the BSP, move the BSP forward to
@@ -23,7 +32,8 @@
  *
  * Safety properties:
  *   - Never touches flash, NVRAM, or non-volatile EFI variables. The result
- *     is stored in a volatile variable (RAM only) that Linux can read.
+ *     is stored in a volatile variable (RAM only) that Linux can read. Under
+ *     systemd-boot it also writes its hang-guard files on the ESP.
  *   - Writes MSR 0x10 only in sync mode. Large corrections only move a TSC
  *     forward; backward moves are limited to MAX_BACKWARD cycles.
  *   - Acts only when every enabled AP could be measured, and re-measures
@@ -31,7 +41,7 @@
  *   - Sync runs only on CPUs with an invariant TSC and without TSC_ADJUST,
  *     and by default only on AMD/Hygon families 17h, 18h, 19h and 1Ah.
  *   - Every wait loop is bounded; APs exit on their own if the BSP goes away.
- *   - Any failure just returns to GRUB, which boots normally.
+ *   - Any failure just returns to the boot loader, which boots normally.
  *
  * Why the numbers below are what they are: see docs/DESIGN.md.
  */
@@ -73,6 +83,7 @@
 #endif
 #define MAX_CPUS		512
 #define MAX_SHORTFALL		5000	/* cycles: sane bound for a write's landing error */
+#define MEASURE_TRIES		4	/* read-only passes: re-measure a small miss up to this often */
 #define WARP_ITERS		20000	/* verify: strictly alternating, so every round is cross-core */
 /*
  * Rounds for the accept-or-nudge check during corrections. Kept equal to
@@ -85,7 +96,7 @@
 #define BSP_SPINS		200000000ULL
 #define EDGE_SPINS		1000000ULL
 #define AP_TIMEOUT_US		(60 * 1000 * 1000)
-#define TSCSYNC_VERSION		u"2.0.0"
+#define TSCSYNC_VERSION		u"2.1.0"
 
 #ifdef TSCSYNC_TEST
 /* Test build for VMs only: a warp of the size seen on a Legion Pro 5 16ADR10. */
@@ -132,6 +143,7 @@ struct result {
 	UINT64 rtt;
 	UINT64 warps_bsp, warps_ap, max_warp;
 	BOOLEAN warp_tested;
+	BOOLEAN uncertain;	/* failed only the offset limit, by less than the measurement error */
 };
 
 static struct mailbox mb __attribute__((aligned(64)));
@@ -140,6 +152,8 @@ static UINT64 s_rtt[ROUNDS];
 static INT64 s_off2[ROUNDS];
 static UINT64 tick = 1;
 static EFI_EVENT ap_event[MAX_CPUS];	/* completion event of each AP's last session */
+static UINT64 best_rtt[MAX_CPUS];	/* fastest round trip seen per AP this boot (0: none) */
+static UINTN cur_ap;			/* AP of the current session */
 static INT64 bsp_shift;			/* total cycles added to the BSP TSC */
 static UINT64 tsc_hz = 2495000000ULL;	/* calibrated in efi_main */
 static CHAR16 report[16384];
@@ -364,6 +378,35 @@ static BOOLEAN measure(UINT64 *req, INT64 *off, UINT64 *rtt_out)
 	INT64 off2 = n ? sum / n : 0;
 	*off = quantize(off2 >= 0 ? (off2 + 1) / 2 : -((-off2 + 1) / 2));
 	*rtt_out = best;
+	if (cur_ap < MAX_CPUS && (!best_rtt[cur_ap] || best < best_rtt[cur_ap]))
+		best_rtt[cur_ap] = best;
+	return TRUE;
+}
+
+/*
+ * For read-only passes, which judge an AP on a single estimate. A slow round
+ * trip skews the estimate: on an IdeaPad 5 2-in-1 14AHP9 the same APs read
+ * 0 to 8 cycles at rtt ~340 and -28 to -42 at rtt ~500-530, with no write in
+ * between, and the kernel accepted them. So an offset outside the verify
+ * limit, but no larger than one round trip, is measured again and the
+ * fastest round trip wins.
+ */
+static BOOLEAN measure_best(UINT64 *req, INT64 *off, UINT64 *rtt)
+{
+	if (!measure(req, off, rtt))
+		return FALSE;
+	for (UINTN i = 1; i < MEASURE_TRIES && !verify_ok(*off) &&
+	     abs64(*off) <= (INT64)*rtt; i++) {
+		INT64 o;
+		UINT64 t;
+
+		if (!measure(req, &o, &t))
+			break;
+		if (t < *rtt) {
+			*off = o;
+			*rtt = t;
+		}
+	}
 	return TRUE;
 }
 
@@ -464,6 +507,7 @@ static BOOLEAN start_session(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx)
 		return FALSE;
 	}
 	ZeroMem((void *)&mb, sizeof(mb));
+	cur_ap = idx;
 	st = uefi_call_wrapper(BS->CreateEvent, 5, 0, 0, NULL, NULL, &ev);
 	if (EFI_ERROR(st)) {
 		out(u"  cpu %lu: CreateEvent failed: %r\n", (UINT64)idx, st);
@@ -506,11 +550,11 @@ static void print_line(UINTN idx, UINT64 apic_id, const CHAR16 *what, INT64 off0
 	if (iters)
 		out(u"  %s %2lu apic %3lu: before %ld  after %ld  rtt %lu  iter %lu%s  %s%s\n",
 		    what, (UINT64)idx, apic_id, off0, r->off, r->rtt, (UINT64)iters, warp,
-		    ok ? u"OK " : u"BAD ", note);
+		    ok ? u"OK " : r->uncertain ? u"UNSURE " : u"BAD ", note);
 	else
 		out(u"  %s %2lu apic %3lu: offset %ld  rtt %lu%s  %s%s\n",
 		    what, (UINT64)idx, apic_id, r->off, r->rtt, warp,
-		    ok ? u"OK " : u"BAD ", note);
+		    ok ? u"OK " : r->uncertain ? u"UNSURE " : u"BAD ", note);
 }
 
 /*
@@ -543,7 +587,7 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 		test_desynced[idx] = TRUE;
 	}
 #endif
-	measured = measure(&req, &off0, &r->rtt);
+	measured = fix ? measure(&req, &off0, &r->rtt) : measure_best(&req, &off0, &r->rtt);
 	r->off = off0;
 	if (!measured) {
 		note = u"measure timeout";
@@ -602,8 +646,19 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 	if (measured && warp) {
 		if (!warp_test(r, WARP_ITERS))
 			note = u"warp test timeout";
-		if (!warp_clean(r))
+		if (!warp_clean(r)) {
 			*ok = FALSE;
+		} else if (!*ok && !fix && idx < MAX_CPUS &&
+			   2 * abs64(r->off) <= (INT64)(r->rtt - best_rtt[idx])) {
+			/*
+			 * Warp-free, and this round trip was slower than the AP's
+			 * fastest one this boot by at least twice the offset. Extra
+			 * delay on one leg can skew the estimate by up to half of
+			 * it, so tscsync cannot tell; the kernel's check will.
+			 */
+			r->uncertain = TRUE;
+			note = u"(offset within measurement error, no warps)";
+		}
 	}
 	uefi_call_wrapper(BS->RestoreTPL, 1, old_tpl);
 
@@ -687,10 +742,14 @@ static BOOLEAN bump_bsp(EFI_MP_SERVICES_PROTOCOL *mp, UINTN ref_idx)
 	return ok;
 }
 
-static BOOLEAN has_token(EFI_LOADED_IMAGE *li, const CHAR16 *tok)
+/* Options: GRUB's load options, or the options file under systemd-boot. */
+static const CHAR16 *opts;
+static UINTN opts_len;		/* in CHAR16s */
+
+static BOOLEAN has_token(const CHAR16 *tok)
 {
-	CHAR16 *s = li ? li->LoadOptions : NULL;
-	UINTN n = li ? li->LoadOptionsSize / sizeof(CHAR16) : 0;
+	const CHAR16 *s = opts;
+	UINTN n = opts_len;
 	UINTN tl = StrLen(tok);
 
 	for (UINTN i = 0; s && i + tl <= n; i++) {
@@ -713,13 +772,120 @@ static void save_report(void)
 }
 
 /*
+ * systemd-boot mode. systemd-boot starts every \EFI\systemd\drivers\*x64.efi
+ * before its menu, with no load options, and has nothing like grubenv. The
+ * settings and the hang guard are small files in \EFI\tscsync on the same
+ * ESP instead:
+ *   options   one line of options, e.g. "mode=sync" (written by set-mode.sh)
+ *   disabled  present: do nothing (set-mode.sh off, or the hang guard)
+ *   pending   hang guard: created here before any work, deleted by
+ *             tscsync-report.service once Linux is up. Found at the next
+ *             boot, it means that boot never reached Linux: create disabled.
+ */
+static CHAR16 p_options[] = u"\\EFI\\tscsync\\options";
+static CHAR16 p_disabled[] = u"\\EFI\\tscsync\\disabled";
+static CHAR16 p_pending[] = u"\\EFI\\tscsync\\pending";
+static CHAR16 opt_buf[256];
+
+static BOOLEAN file_open(EFI_FILE_HANDLE root, CHAR16 *path, UINT64 mode, EFI_FILE_HANDLE *f)
+{
+	return !EFI_ERROR(uefi_call_wrapper(root->Open, 5, root, f, path, mode, 0ULL));
+}
+
+static UINTN file_read(EFI_FILE_HANDLE root, CHAR16 *path, CHAR8 *buf, UINTN size)
+{
+	EFI_FILE_HANDLE f;
+	UINTN n = size;
+
+	if (!file_open(root, path, EFI_FILE_MODE_READ, &f))
+		return 0;
+	if (EFI_ERROR(uefi_call_wrapper(f->Read, 3, f, &n, buf)))
+		n = 0;
+	uefi_call_wrapper(f->Close, 1, f);
+	return n;
+}
+
+static BOOLEAN file_exists(EFI_FILE_HANDLE root, CHAR16 *path)
+{
+	EFI_FILE_HANDLE f;
+
+	if (!file_open(root, path, EFI_FILE_MODE_READ, &f))
+		return FALSE;
+	uefi_call_wrapper(f->Close, 1, f);
+	return TRUE;
+}
+
+static BOOLEAN file_create(EFI_FILE_HANDLE root, CHAR16 *path)
+{
+	EFI_FILE_HANDLE f;
+	CHAR8 one[] = "1\n";
+	UINTN n = 2;
+	EFI_STATUS st;
+
+	if (!file_open(root, path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE |
+		       EFI_FILE_MODE_CREATE, &f))
+		return FALSE;
+	st = uefi_call_wrapper(f->Write, 3, f, &n, one);
+	if (!EFI_ERROR(st))
+		st = uefi_call_wrapper(f->Flush, 1, f);
+	uefi_call_wrapper(f->Close, 1, f);
+	return !EFI_ERROR(st);
+}
+
+static void file_delete(EFI_FILE_HANDLE root, CHAR16 *path)
+{
+	EFI_FILE_HANDLE f;
+
+	if (file_open(root, path, EFI_FILE_MODE_READ | EFI_FILE_MODE_WRITE, &f))
+		uefi_call_wrapper(f->Delete, 1, f);	/* also closes it */
+}
+
+/* Returns TRUE when tscsync should run, with opts set from the options file. */
+static BOOLEAN sdboot_setup(EFI_LOADED_IMAGE *li)
+{
+	EFI_FILE_HANDLE root = LibOpenRoot(li->DeviceHandle);
+	CHAR8 raw[sizeof(opt_buf) / sizeof(opt_buf[0])];
+	BOOLEAN run = FALSE;
+	UINTN n;
+
+	if (!root)
+		return FALSE;
+	if (file_exists(root, p_disabled))
+		goto out;
+	if (file_exists(root, p_pending)) {
+		out(u"tscsync: previous boot did not reach Linux; disabling tscsync\n");
+		file_create(root, p_disabled);
+		file_delete(root, p_pending);
+		save_report();
+		goto out;
+	}
+	n = file_read(root, p_options, raw, sizeof(raw) - 1);
+	for (opts_len = 0; opts_len < n && raw[opts_len] != '\n' && raw[opts_len] != '\r' &&
+	     raw[opts_len] != 0; opts_len++)
+		opt_buf[opts_len] = raw[opts_len];
+	opt_buf[opts_len] = 0;
+	opts = opt_buf;
+	if (!file_create(root, p_pending)) {
+		out(u"tscsync: cannot write its hang guard to the ESP; not running\n");
+		save_report();
+		goto out;
+	}
+	run = TRUE;
+out:
+	uefi_call_wrapper(root->Close, 1, root);
+	return run;
+}
+
+/*
  * One pass over every enabled AP. Returns the number of APs that are not OK
- * and fills the survey arrays when they are given.
+ * (*n_unsure of them only uncertain) and fills the survey arrays when they
+ * are given.
  */
 static UINTN ap_pass(EFI_MP_SERVICES_PROTOCOL *mp, UINTN nproc, UINTN bsp, BOOLEAN fix,
-		     BOOLEAN warp, INT64 *offs, BOOLEAN *measured, UINTN *n_measured)
+		     BOOLEAN warp, INT64 *offs, BOOLEAN *measured, UINTN *n_measured,
+		     UINTN *n_unsure)
 {
-	UINTN good = 0, bad = 0;
+	UINTN good = 0, bad = 0, unsure = 0;
 
 	if (n_measured)
 		*n_measured = 0;
@@ -743,11 +909,18 @@ static UINTN ap_pass(EFI_MP_SERVICES_PROTOCOL *mp, UINTN nproc, UINTN bsp, BOOLE
 			(*n_measured)++;
 		if (ok)
 			good++;
+		else if (r.uncertain)
+			unsure++;
 		else
 			bad++;
 	}
-	out(u"  %lu ok, %lu not ok\n", (UINT64)good, (UINT64)bad);
-	return bad;
+	if (unsure)
+		out(u"  %lu ok, %lu unsure, %lu not ok\n", (UINT64)good, (UINT64)unsure, (UINT64)bad);
+	else
+		out(u"  %lu ok, %lu not ok\n", (UINT64)good, (UINT64)bad);
+	if (n_unsure)
+		*n_unsure = unsure;
+	return bad + unsure;
 }
 
 /* gnu-efi's crt0 converts the firmware's MS ABI call into a SysV call. */
@@ -757,18 +930,35 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	static BOOLEAN measured[MAX_CPUS];
 	EFI_LOADED_IMAGE *li = NULL;
 	EFI_MP_SERVICES_PROTOCOL *mp = NULL;
-	UINTN nproc = 0, nenabled = 0, bsp = 0, n_measured = 0, bad = 1;
+	UINTN nproc = 0, nenabled = 0, bsp = 0, n_measured = 0, bad = 1, unsure = 0;
 	UINT32 a, b, c, d;
 	BOOLEAN sync;
 	EFI_STATUS st;
 
 	InitializeLib(image, systab);
 	uefi_call_wrapper(BS->HandleProtocol, 3, image, &LoadedImageProtocol, (void **)&li);
-	sync = has_token(li, u"mode=sync");
-	BOOLEAN any_cpu = has_token(li, u"allow=any-cpu");
+	if (!li)
+		return EFI_SUCCESS;
+	/*
+	 * Loaded as a driver: by systemd-boot. It unloads a driver that returns
+	 * EFI_ABORTED without logging an error, which is right for a tool that
+	 * leaves nothing resident.
+	 */
+	BOOLEAN driver = li->ImageCodeType == EfiBootServicesCode;
+	EFI_STATUS done_status = driver ? EFI_ABORTED : EFI_SUCCESS;
+
+	if (driver) {
+		if (!sdboot_setup(li))
+			return done_status;
+	} else {
+		opts = li->LoadOptions;
+		opts_len = li->LoadOptionsSize / sizeof(CHAR16);
+	}
+	sync = has_token(u"mode=sync");
+	BOOLEAN any_cpu = has_token(u"allow=any-cpu");
 #ifdef TSCSYNC_TEST
-	test_ap_behind = has_token(li, u"test=ap-behind");
-	test_mixed = has_token(li, u"test=mixed");
+	test_ap_behind = has_token(u"test=ap-behind");
+	test_mixed = has_token(u"test=mixed");
 	test_bsp_loop = sync && !test_ap_behind && !test_mixed;
 	out(u"*** TEST BUILD: %s; for VMs only ***\n", test_ap_behind ?
 	    u"sets every AP back before syncing" : test_mixed ?
@@ -845,7 +1035,7 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	 * way the kernel will: verify limit plus the warp test.
 	 */
 	out(u"survey (read-only%s):\n", sync ? u"" : u", with kernel-style warp test");
-	bad = ap_pass(mp, nproc, bsp, FALSE, !sync, offs, measured, &n_measured);
+	bad = ap_pass(mp, nproc, bsp, FALSE, !sync, offs, measured, &n_measured, &unsure);
 	out(u"  (%lu ms)\n", ms_since(t_phase, s_phase));
 
 	INT64 minoff = 0, maxoff = 0;
@@ -929,22 +1119,27 @@ ap_fix:
 	out(u"AP pass (corrects any AP still off):\n");
 	t_phase = rdtsc();
 	s_phase = bsp_shift;
-	ap_pass(mp, nproc, bsp, TRUE, FALSE, NULL, NULL, NULL);
+	ap_pass(mp, nproc, bsp, TRUE, FALSE, NULL, NULL, NULL, NULL);
 	out(u"  (%lu ms)\n", ms_since(t_phase, s_phase));
 verify:
 	out(u"verify (read-only, with kernel-style warp test):\n");
 	t_phase = rdtsc();
 	s_phase = bsp_shift;
-	bad = ap_pass(mp, nproc, bsp, FALSE, TRUE, NULL, NULL, NULL);
+	bad = ap_pass(mp, nproc, bsp, FALSE, TRUE, NULL, NULL, NULL, &unsure);
 	out(u"  (%lu ms)\n", ms_since(t_phase, s_phase));
 result:
 	for (UINTN i = 0; i < MAX_CPUS; i++)
 		if (!wait_idle(i))
 			out(u"cpu %lu still busy at exit; its event is left open\n", (UINT64)i);
 	out(u"total %lu ms\n", ms_since(t_all, s_all));
-	out(u"%s\n", bad == 0 ? u"RESULT: all APs in sync (Linux should keep the TSC)" :
-			      u"RESULT: some APs out of sync (Linux will fall back to HPET)");
+	if (bad == 0)
+		out(u"RESULT: all APs in sync (Linux should keep the TSC)\n");
+	else if (bad == unsure)
+		out(u"RESULT: no warps, but %lu offsets are within measurement error of the limit "
+		    u"(the kernel's check decides; see tscsync-status)\n", (UINT64)unsure);
+	else
+		out(u"RESULT: some APs out of sync (Linux will fall back to HPET)\n");
 done:
 	save_report();
-	return EFI_SUCCESS;	/* always hand control back to GRUB */
+	return done_status;	/* always hand control back to the boot loader */
 }

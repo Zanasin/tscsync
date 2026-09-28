@@ -7,11 +7,17 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build
         run: make all test
-      - name: Check release build has no test code
-        run: "! strings -el build/tscsync.efi | grep -q 'TEST BUILD'"
+      - name: Check release builds have no test code
+        run: for f in build/tscsync.efi build/tscsync-driver.efi; do ! strings -el "$f" | grep -q 'TEST BUILD'; done
+      - name: Check PE subsystems (application for GRUB, boot-services driver for systemd-boot)
+        run: |
+          objdump -p build/tscsync.efi | grep -q 'EFI application'
+          objdump -p build/tscsync-driver.efi | grep -q 'EFI boot service driver'
       - name: Check shell scripts
         run: for f in scripts/*.sh scripts/tscsync-status boot/tscsync-report tools/idle-bench.sh vmtest/*.sh; do bash -n "$f"; done
       - uses: actions/upload-artifact@v4
         with:
           name: tscsync-efi-unsigned
-          path: build/tscsync.efi
+          path: |
+            build/tscsync.efi
+            build/tscsync-driver.efi

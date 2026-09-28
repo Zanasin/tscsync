@@ -1,8 +1,9 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: MIT
 # Runs inside a throwaway container built from vmtest/Containerfile: boots
-# GRUB + tscsync in a KVM VM with OVMF and 8 vCPUs, exercising the real
-# custom.cfg snippet and hang guard. Started by vmtest/run.sh.
+# GRUB + tscsync, then systemd-boot + the tscsync driver, in KVM VMs with
+# OVMF and 8 vCPUs, exercising the real custom.cfg snippet, the systemd-boot
+# state files and both hang guards. Started by vmtest/run.sh.
 set -euo pipefail
 
 W=/work
@@ -71,7 +72,7 @@ boot_vm() {	# $1 = label, $2 = kvm (default) or tcg
 		-drive format=raw,file="$T/esp.img" \
 		-nographic -no-reboot -monitor none -serial stdio 2>&1 |
 		tr -d '\r' | sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' |
-		grep -E 'GRUB:|tscsync|TEST BUILD|cpu:|processors:|survey|verify|AP pass|APs vs|moving BSP|bsp vs|cpu +[0-9]+ apic|ok, |RESULT|error|refused|skipped|disabling|qemu-system| ms\)|total|busy' || true
+		grep -E 'GRUB:|tscsync|Failed|not a driver|TEST BUILD|cpu:|processors:|survey|verify|AP pass|APs vs|moving BSP|bsp vs|cpu +[0-9]+ apic|ok, |RESULT|error|refused|skipped|disabling|qemu-system| ms\)|total|busy' || true
 	echo "(VM exit status: ${PIPESTATUS[0]})"
 }
 
@@ -106,3 +107,53 @@ boot_vm "guard: expect skip + disable"
 
 echo "### 5. after the guard disabled it: expect tscsync not to run"
 boot_vm "guard: disabled"
+
+# --- systemd-boot: the driver build, loaded from EFI/systemd/drivers ---------
+make_sdboot_disk() {	# $1 = driver binary, $2 = options line
+	rm -f "$T/esp.img"
+	truncate -s 64M "$T/esp.img"
+	mkfs.vfat -F 32 -i "${ESP_UUID/-/}" "$T/esp.img" >/dev/null
+	export MTOOLS_SKIP_CHECK=1
+	mmd -i "$T/esp.img" ::/EFI ::/EFI/BOOT ::/EFI/systemd ::/EFI/systemd/drivers \
+		::/EFI/tscsync ::/loader
+	mcopy -i "$T/esp.img" /usr/lib/systemd/boot/efi/systemd-bootx64.efi ::/EFI/BOOT/BOOTX64.EFI
+	mcopy -i "$T/esp.img" "$1" ::/EFI/systemd/drivers/tscsyncx64.efi
+	# No boot entries: power off right after the drivers have run.
+	printf 'timeout 0\nauto-poweroff yes\ndefault auto-poweroff\n' >"$T/loader.conf"
+	mcopy -i "$T/esp.img" "$T/loader.conf" ::/loader/loader.conf
+	set_options "$2"
+}
+
+set_options() {	# $1 = options line, as scripts/set-mode.sh writes it
+	printf '%s\n' "$1" >"$T/options"
+	mcopy -o -i "$T/esp.img" "$T/options" ::/EFI/tscsync/options
+}
+
+state() {	# which tscsync state files exist on the ESP
+	echo "ESP state: $(mdir -b -i "$T/esp.img" ::/EFI/tscsync 2>/dev/null |
+		sed 's|.*/||' | sort | tr '\n' ' ')"
+}
+
+linux_booted() {	# what tscsync-report.service does once Linux is up
+	mdel -i "$T/esp.img" ::/EFI/tscsync/pending 2>/dev/null || true
+}
+
+echo
+echo "### 6. systemd-boot, production driver, measure (read-only)"
+make_sdboot_disk "$W/build/tscsync-driver.efi" "mode=measure"
+boot_vm "systemd-boot: production driver, measure"
+state
+linux_booted
+
+echo "### 7. systemd-boot, test driver: BSP set back by the Legion's warp, then sync + verify"
+make_sdboot_disk "$W/build/tscsync-test-driver.efi" "mode=sync"
+boot_vm "systemd-boot: TEST BSP-behind, sync" kvm-pinned
+state
+
+echo "### 8. systemd-boot hang guard: pending left by the last boot (Linux never cleared it)"
+boot_vm "systemd-boot guard: expect skip + disable"
+state
+
+echo "### 9. systemd-boot after the guard disabled it: expect tscsync not to run"
+boot_vm "systemd-boot guard: disabled"
+state

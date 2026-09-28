@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: MIT
-# Runs once per boot from tscsync-report.service (as root): clears the GRUB
-# hang guard now that Linux is up, and records what tscsync.efi did.
+# Runs once per boot from tscsync-report.service (as root): clears the hang
+# guard now that Linux is up, and records what tscsync.efi did.
 set -u
 
 # shellcheck source=/dev/null
@@ -9,7 +9,9 @@ set -u
 VAR=/sys/firmware/efi/efivars/TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000
 OUT=/run/tscsync-result.txt
 
-if "$EDITENV" "$GRUBENV" list 2>/dev/null | grep -qx 'tscsync_pending=1'; then
+if [ "${LOADER:-grub}" = systemd-boot ]; then
+	rm -f "$STATE_DIR/pending"
+elif "$EDITENV" "$GRUBENV" list 2>/dev/null | grep -qx 'tscsync_pending=1'; then
 	"$EDITENV" "$GRUBENV" set tscsync_pending=0
 fi
 

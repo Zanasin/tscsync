@@ -13,10 +13,26 @@ set -euo pipefail
 extra=
 [ "${2:-}" = --any-cpu ] && extra=" allow=any-cpu"
 case "${1:-}" in
-measure) "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=measure$extra" tscsync_pending=0 ;;
-sync)    "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=sync$extra" tscsync_pending=0 ;;
-off)     "$EDITENV" "$GRUBENV" set tscsync_enable=0 tscsync_pending=0 ;;
-*)       echo "usage: sudo $0 measure|sync|off [--any-cpu]" >&2; exit 2 ;;
+measure | sync | off) ;;
+*) echo "usage: sudo $0 measure|sync|off [--any-cpu]" >&2; exit 2 ;;
 esac
-"$EDITENV" "$GRUBENV" list | grep '^tscsync'
+
+if [ "${LOADER:-grub}" = systemd-boot ]; then
+	# The driver reads these files on the ESP (see src/tscsync.c, sdboot_setup).
+	rm -f "$STATE_DIR/pending"
+	if [ "$1" = off ]; then
+		: >"$STATE_DIR/disabled"
+	else
+		printf 'mode=%s%s\n' "$1" "$extra" >"$STATE_DIR/options"
+		rm -f "$STATE_DIR/disabled"
+	fi
+	echo "options: $(cat "$STATE_DIR/options")$([ -e "$STATE_DIR/disabled" ] && echo '  (disabled)')"
+else
+	case "$1" in
+	measure) "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=measure$extra" tscsync_pending=0 ;;
+	sync)    "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=sync$extra" tscsync_pending=0 ;;
+	off)     "$EDITENV" "$GRUBENV" set tscsync_enable=0 tscsync_pending=0 ;;
+	esac
+	"$EDITENV" "$GRUBENV" list | grep '^tscsync'
+fi
 echo "Takes effect on the next boot."
