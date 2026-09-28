@@ -73,17 +73,20 @@ The whole run takes about 0.6 s. Details and measurements:
 
 ## Safety
 
-- It writes nothing permanent: no flash, NVRAM or firmware settings. The TSC
-  registers it changes reset at power-off, and its report is a RAM-only EFI
-  variable.
+- It never writes flash, NVRAM or firmware settings. The TSC registers it
+  changes reset at power-off, and its report is a RAM-only EFI variable. Its
+  only disk writes are its own hang-guard flag: in grubenv with GRUB, or small
+  files in `EFI/tscsync/` on the EFI system partition with systemd-boot.
 - `install.sh` starts in read-only measure mode. You switch to sync only after
   you've seen the numbers.
 - Large corrections only move counters forward. Backward steps are capped at
   1 million cycles (about 0.4 ms) and only used for fine-tuning.
 - If a boot never reaches Linux, the next boot skips tscsync and turns it off
-  (the hang guard).
+  (the hang guard). Booting another OS from the boot menu counts too; run
+  `sudo scripts/set-mode.sh sync` to turn it back on.
 - Secure Boot stays on. The binary is signed with a Machine Owner Key (MOK)
-  you already have or create once.
+  you already have or create once, or with systemd-boot, a key in the
+  firmware's db such as sbctl's.
 - If anything goes wrong, Linux falls back to HPET, the same as it would
   without tscsync.
 - In sync mode it refuses unfamiliar hardware (CPUs with `TSC_ADJUST`, without
