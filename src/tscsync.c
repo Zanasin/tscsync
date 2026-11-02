@@ -29,6 +29,9 @@
  *                    (small backward steps only to fine-tune an overshoot)
  *                 4. verify every AP, including a kernel-style warp test
  *   allow=any-cpu run sync on CPUs outside the supported list (see below)
+ *   exit=success  as a driver, return EFI_SUCCESS instead of EFI_ABORTED
+ *                 (for rEFInd, which treats ABORTED as a yellow error; keep
+ *                 the default ABORTED under systemd-boot so it unloads quietly)
  *
  * Safety properties:
  *   - Never touches flash, NVRAM, or non-volatile EFI variables. The result
@@ -776,7 +779,8 @@ static void save_report(void)
  * before its menu, with no load options, and has nothing like grubenv. The
  * settings and the hang guard are small files in \EFI\tscsync on the same
  * ESP instead:
- *   options   one line of options, e.g. "mode=sync" (written by set-mode.sh)
+ *   options   one line of options, e.g. "mode=sync" or
+ *             "mode=sync exit=success" (written by set-mode.sh)
  *   disabled  present: do nothing (set-mode.sh off, or the hang guard)
  *   pending   hang guard: created here before any work, deleted by
  *             tscsync-report.service once Linux is up. Found at the next
@@ -840,16 +844,28 @@ static void file_delete(EFI_FILE_HANDLE root, CHAR16 *path)
 		uefi_call_wrapper(f->Delete, 1, f);	/* also closes it */
 }
 
+/* Read \EFI\tscsync\options into opts before hang-guard decisions. */
+static void load_options_file(EFI_FILE_HANDLE root)
+{
+	CHAR8 raw[sizeof(opt_buf) / sizeof(opt_buf[0])];
+	UINTN n = file_read(root, p_options, raw, sizeof(raw) - 1);
+
+	for (opts_len = 0; opts_len < n && raw[opts_len] != '\n' && raw[opts_len] != '\r' &&
+	     raw[opts_len] != 0; opts_len++)
+		opt_buf[opts_len] = raw[opts_len];
+	opt_buf[opts_len] = 0;
+	opts = opt_buf;
+}
+
 /* Returns TRUE when tscsync should run, with opts set from the options file. */
 static BOOLEAN sdboot_setup(EFI_LOADED_IMAGE *li)
 {
 	EFI_FILE_HANDLE root = LibOpenRoot(li->DeviceHandle);
-	CHAR8 raw[sizeof(opt_buf) / sizeof(opt_buf[0])];
 	BOOLEAN run = FALSE;
-	UINTN n;
 
 	if (!root)
 		return FALSE;
+	load_options_file(root);
 	if (file_exists(root, p_disabled))
 		goto out;
 	if (file_exists(root, p_pending)) {
@@ -859,12 +875,6 @@ static BOOLEAN sdboot_setup(EFI_LOADED_IMAGE *li)
 		save_report();
 		goto out;
 	}
-	n = file_read(root, p_options, raw, sizeof(raw) - 1);
-	for (opts_len = 0; opts_len < n && raw[opts_len] != '\n' && raw[opts_len] != '\r' &&
-	     raw[opts_len] != 0; opts_len++)
-		opt_buf[opts_len] = raw[opts_len];
-	opt_buf[opts_len] = 0;
-	opts = opt_buf;
 	if (!file_create(root, p_pending)) {
 		out(u"tscsync: cannot write its hang guard to the ESP; not running\n");
 		save_report();
@@ -940,15 +950,20 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	if (!li)
 		return EFI_SUCCESS;
 	/*
-	 * Loaded as a driver: by systemd-boot. It unloads a driver that returns
-	 * EFI_ABORTED without logging an error, which is right for a tool that
-	 * leaves nothing resident.
+	 * Loaded as a driver (systemd-boot or rEFInd drivers_x64): default to
+	 * EFI_ABORTED so systemd-boot unloads quietly. rEFInd treats ABORTED as
+	 * a yellow error, so options may include exit=success to return
+	 * EFI_SUCCESS instead (image stays loaded until ExitBootServices).
 	 */
 	BOOLEAN driver = li->ImageCodeType == EfiBootServicesCode;
-	EFI_STATUS done_status = driver ? EFI_ABORTED : EFI_SUCCESS;
+	EFI_STATUS done_status = EFI_SUCCESS;
 
 	if (driver) {
-		if (!sdboot_setup(li))
+		BOOLEAN run = sdboot_setup(li);
+
+		if (!has_token(u"exit=success"))
+			done_status = EFI_ABORTED;
+		if (!run)
 			return done_status;
 	} else {
 		opts = li->LoadOptions;
