@@ -1,7 +1,9 @@
 # SPDX-License-Identifier: MIT
 [Unit]
-Description=Record tscsync result and clear its GRUB hang guard
-RequiresMountsFor=/boot
+Description=Record tscsync result and clear its hang guard
+# Filled in by install.sh: the filesystem that holds the hang guard
+# (grubenv for GRUB, or EFI/tscsync on the ESP for systemd-boot / rEFInd).
+RequiresMountsFor=@REQUIRES_MOUNTS@
 # Offline-update boots (PackageKit, dnf offline) start system-update.target
 # instead of multi-user.target and reboot when done. Clear the guard there
 # too, before the update starts, or the next boot would disable tscsync.

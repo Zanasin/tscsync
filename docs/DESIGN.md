@@ -139,7 +139,10 @@ measures it with the BSP's TSC, which tscsync moves forward.
   `tscsync_enable=0`. The service is wanted by both `multi-user.target` and
   `system-update.target`: offline-update boots (PackageKit, dnf offline)
   never reach `multi-user.target`, and without this, one such boot was
-  enough to disable tscsync.
+  enough to disable tscsync. `install.sh` sets `RequiresMountsFor=` on the
+  unit to the filesystem that holds the hang guard (grubenv for GRUB, or
+  the ESP for systemd-boot / rEFInd) so a separate ESP mount such as
+  `/boot/efi` is ready before the clear runs.
 - systemd-boot has no hook like `custom.cfg`, but before its menu it loads
   every `\EFI\systemd\drivers\*x64.efi` that is a boot-services driver, and
   unloads one that returns `EFI_ABORTED` without logging an error. The same
