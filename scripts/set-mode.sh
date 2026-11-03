@@ -31,9 +31,15 @@ for arg in "$@"; do
 	esac
 done
 
+if [ "${LOADER:-grub}" != systemd-boot ]; then
+	# Only the driver build (systemd-boot or rEFInd) reads exit=success; the
+	# GRUB application always returns EFI_SUCCESS, so don't put it in grubenv.
+	if [ -n "$exit_tok" ] || [ -n "$clear_exit" ]; then
+		echo "note: --exit-success/--no-exit-success only apply to the driver (systemd-boot or rEFInd); ignored with GRUB" >&2
+	fi
+	exit_tok=
 # Keep exit=success across mode changes unless cleared or newly requested.
-if [ -z "$exit_tok" ] && [ -z "$clear_exit" ] &&
-   [ "${LOADER:-grub}" = systemd-boot ] &&
+elif [ -z "$exit_tok" ] && [ -z "$clear_exit" ] &&
    [ -r "$STATE_DIR/options" ] && grep -qw 'exit=success' "$STATE_DIR/options"; then
 	exit_tok=" exit=success"
 fi
@@ -50,8 +56,8 @@ if [ "${LOADER:-grub}" = systemd-boot ]; then
 	echo "options: $(cat "$STATE_DIR/options")$([ -e "$STATE_DIR/disabled" ] && echo '  (disabled)')"
 else
 	case "$mode" in
-	measure) "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=measure$extra$exit_tok" tscsync_pending=0 ;;
-	sync)    "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=sync$extra$exit_tok" tscsync_pending=0 ;;
+	measure) "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=measure$extra" tscsync_pending=0 ;;
+	sync)    "$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=mode=sync$extra" tscsync_pending=0 ;;
 	off)     "$EDITENV" "$GRUBENV" set tscsync_enable=0 tscsync_pending=0 ;;
 	esac
 	"$EDITENV" "$GRUBENV" list | grep '^tscsync'
