@@ -3,7 +3,8 @@
 # Runs inside a throwaway container built from vmtest/Containerfile: boots
 # GRUB + tscsync, then systemd-boot + the tscsync driver, in KVM VMs with
 # OVMF and 8 vCPUs, exercising the real custom.cfg snippet, the systemd-boot
-# state files and both hang guards. Started by vmtest/run.sh.
+# state files and both hang guards; then loads the driver from the UEFI shell
+# the way rEFInd does. Started by vmtest/run.sh.
 set -euo pipefail
 
 W=/work
@@ -157,3 +158,48 @@ state
 echo "### 9. systemd-boot after the guard disabled it: expect tscsync not to run"
 boot_vm "systemd-boot guard: disabled"
 state
+
+# --- rEFInd-style loading: the UEFI shell's "load" starts a driver and reports
+# its status the way rEFInd does (rEFInd shows any error status in yellow).
+shell_boot() {	# $1 = label; startup.nsh must already be on the ESP
+	echo
+	echo "================ $1 (kvm) ================"
+	cp /usr/share/edk2/ovmf/OVMF_VARS.fd "$T/vars.fd"
+	timeout 150 qemu-system-x86_64 -machine q35,accel=kvm -cpu host -smp 4 -m 512 \
+		-drive if=pflash,format=raw,readonly=on,file=/usr/share/edk2/ovmf/OVMF_CODE.fd \
+		-drive if=pflash,format=raw,file="$T/vars.fd" -drive format=raw,file="$T/esp.img" \
+		-nographic -no-reboot -monitor none -serial stdio 2>&1 | tr -d '\r' |
+		sed -e 's/\x1b\[[0-9;?]*[a-zA-Z]//g' |
+		grep -aE "Image '|tscsync [0-9]|RESULT|disabling|Failed|not a driver" || true
+}
+
+make_shell_disk() {	# $1 = startup.nsh lines (\r\n-separated), $2 = options line
+	make_sdboot_disk "$W/build/tscsync-driver.efi" "$2"
+	mmd -i "$T/esp.img" ::/EFI/refind ::/EFI/refind/drivers_x64
+	mcopy -i "$T/esp.img" "$W/build/tscsync-driver.efi" ::/EFI/refind/drivers_x64/tscsyncx64.efi
+	mcopy -i "$T/esp.img" /usr/lib/systemd/boot/efi/systemd-bootx64.efi ::/EFI/systemd/systemd-bootx64.efi
+	mcopy -o -i "$T/esp.img" /usr/share/edk2/ovmf/Shell.efi ::/EFI/BOOT/BOOTX64.EFI
+	printf "fs0:\r\n$1" >"$T/startup.nsh"
+	mcopy -i "$T/esp.img" "$T/startup.nsh" ::/startup.nsh
+}
+
+echo
+echo "### 10. exit status as a rEFInd-style driver: default (expect Aborted)"
+make_shell_disk 'load \\EFI\\refind\\drivers_x64\\tscsyncx64.efi\r\nreset -s\r\n' "mode=measure"
+shell_boot "shell load, mode=measure"
+state
+
+echo "### 11. exit status with exit=success (expect Success), also while disabled"
+make_shell_disk 'load \\EFI\\refind\\drivers_x64\\tscsyncx64.efi\r\nreset -s\r\n' "mode=measure exit=success"
+shell_boot "shell load, exit=success"
+state
+mcopy -o -i "$T/esp.img" "$T/options" ::/EFI/tscsync/disabled
+shell_boot "shell load, exit=success, disabled"
+state
+
+echo "### 12. two copies in one boot: rEFInd-style load, then systemd-boot loads its own"
+echo "###     (expect one run, the second copy silent, no 'disabling', state: options pending)"
+make_shell_disk 'load \\EFI\\refind\\drivers_x64\\tscsyncx64.efi\r\n\\EFI\\systemd\\systemd-bootx64.efi\r\n' "mode=measure exit=success"
+shell_boot "shell load, then systemd-boot"
+state
+

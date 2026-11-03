@@ -38,7 +38,7 @@ Measured on the machine that motivated this project:
 ## Algorithm
 
 tscsync runs from the boot loader before its menu: as a UEFI application
-launched by GRUB, or as a boot-services driver loaded by systemd-boot (see
+launched by GRUB, or as a boot-services driver loaded by systemd-boot or rEFInd (see
 Boot integration).
 
 ### Measuring an offset
@@ -136,17 +136,24 @@ measures it with the BSP's TSC, which tscsync moves forward.
   unloads one that returns `EFI_ABORTED` without logging an error. The same
   code is built as such a driver (`build/tscsync-driver.efi`, installed as
   `tscsyncx64.efi`); it detects that it was loaded as a driver and returns
-  `EFI_ABORTED` by default. rEFInd can load the same binary from
-  `EFI/refind/drivers_x64/`, but treats `EFI_ABORTED` as a yellow error
-  after a successful run; add `exit=success` to `\EFI\tscsync\options`
-  (e.g. `mode=sync exit=success`, or `set-mode.sh sync --exit-success`)
-  to return `EFI_SUCCESS` instead. Do not install the driver under both
-  loaders at once: a same-session double-load trips the hang guard. State
+  `EFI_ABORTED` by default. rEFInd loads the same binary from
+  `drivers_x64` in its own folder (`EFI/refind` or `EFI/BOOT`, found by its
+  `refind.conf`; detected from the firmware's `BootCurrent` entry, since
+  rEFInd sets no variable of its own), but shows `EFI_ABORTED` as a yellow
+  error after a successful run, so `exit=success` in the options returns
+  `EFI_SUCCESS` instead; the installer sets it for rEFInd. The image then
+  stays loaded until `ExitBootServices`, which is harmless. State
   is three small files in `\EFI\tscsync` on the same ESP: `options`,
   `disabled` (`set-mode.sh off`, or the hang guard) and `pending` (the hang
   guard: created before any work, deleted by `tscsync-report.service`; found
   at the next boot, it creates `disabled`). If `pending` cannot be written,
   the driver does nothing.
+- Two copies in one boot: rEFInd chaining to systemd-boot, for example, would
+  start the driver twice, and the second copy would find the first one's
+  `pending` file and switch tscsync off. So before anything else, every copy
+  checks for the result variable below; it is volatile, so it exists only if
+  tscsync already ran since the last reset. Then the copy returns at once,
+  leaving the first run's result and hang guard alone.
 - The report is stored in the volatile EFI variable
   `TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000` and copied to
   `/run/tscsync-result.txt` at boot.
@@ -160,7 +167,11 @@ driver, in QEMU/OVMF VMs (8 vCPUs) inside a podman container, using the real
 - release build in measure mode, and in sync mode where sync must be refused;
 - test build (`make test`) that first creates a warp, in three patterns:
   BSP behind all APs, APs behind the BSP, and mixed;
-- the hang guard, for both boot loaders, and the systemd-boot state files.
+- the hang guard, for both boot loaders, and the systemd-boot state files;
+- the driver's exit status as rEFInd sees it (the UEFI shell's `load` reports
+  it the same way), with and without `exit=success`;
+- two copies in one boot (shell-loaded copy, then systemd-boot's): only the
+  first runs.
 
 KVM's TSC writes jitter by 50–200 cycles, so the test build uses looser
 tolerances (±50-cycle target, 30 iterations); with a looser ±100 target,

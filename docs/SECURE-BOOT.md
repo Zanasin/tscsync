@@ -3,7 +3,7 @@
 With Secure Boot on, the boot loader only runs EFI programs that are signed
 by a key the firmware or shim trusts. With GRUB, tscsync is usually signed
 with a Machine Owner Key (MOK), the same kind of key used for out-of-tree
-kernel modules such as NVIDIA's. With systemd-boot, see the section below.
+kernel modules such as NVIDIA's. With systemd-boot or rEFInd, see the sections below.
 
 ## If you already have a MOK
 
@@ -57,6 +57,7 @@ The installer finds sbctl's key and signs with it. To sign yourself instead:
 sudo scripts/install.sh --no-sign
 sudo sbctl sign -s /boot/efi/EFI/tscsync/tscsync.efi         # GRUB (adjust the ESP path)
 sudo sbctl sign -s /efi/EFI/systemd/drivers/tscsyncx64.efi   # systemd-boot
+sudo sbctl sign -s /boot/efi/EFI/refind/drivers_x64/tscsyncx64.efi   # rEFInd
 ```
 
 ## systemd-boot
@@ -65,6 +66,13 @@ systemd-boot loads drivers with the firmware's `LoadImage`, which checks the
 firmware's `db`. A key in `db` (for example from `sbctl`) always works. A
 MOK-only key works only where shim verifies the image, which may not be the
 case; then systemd-boot skips tscsync and boots normally.
+
+## rEFInd
+
+rEFInd's documentation says it launches boot loaders signed with a db key, a
+shim key or a MOK, but doesn't say how it checks drivers. A key in `db` is the
+safe choice. If rEFInd refuses the driver, it shows an error and boots
+normally without tscsync.
 
 ## If the boot loader refuses the tool
 

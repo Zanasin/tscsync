@@ -9,7 +9,7 @@ set -u
 VAR=/sys/firmware/efi/efivars/TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000
 OUT=/run/tscsync-result.txt
 
-if [ "${LOADER:-grub}" = systemd-boot ]; then
+if [ "${LOADER:-grub}" != grub ]; then
 	rm -f "$STATE_DIR/pending"
 elif "$EDITENV" "$GRUBENV" list 2>/dev/null | grep -qx 'tscsync_pending=1'; then
 	"$EDITENV" "$GRUBENV" set tscsync_pending=0

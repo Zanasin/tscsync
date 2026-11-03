@@ -7,10 +7,11 @@
 #                            PEM or DER cert) enrolled as a MOK or in db
 #   --no-sign                install unsigned (only if Secure Boot is off, or
 #                            you sign the .efi yourself, e.g. with sbctl)
-#   --loader grub|systemd-boot
+#   --loader grub|systemd-boot|refind
 #                            boot loader to hook into (default: detected)
 #   --esp DIR                EFI system partition mount point
 #   --grub-dir DIR           GRUB config directory (holding grub.cfg)
+#   --refind-dir DIR         rEFInd directory on the ESP (holding refind.conf)
 #
 # What it changes, all reversible with scripts/uninstall.sh:
 #   GRUB:          <ESP>/EFI/tscsync/tscsync.efi
@@ -18,19 +19,21 @@
 #                  grubenv: tscsync_enable=1 tscsync_mode=mode=measure tscsync_pending=0
 #   systemd-boot:  <ESP>/EFI/systemd/drivers/tscsyncx64.efi
 #                  <ESP>/EFI/tscsync/options       "mode=measure"
-#   both:          /usr/local/libexec/tscsync-report     clears the hang guard after boot
+#   rEFInd:        <refind-dir>/drivers_x64/tscsyncx64.efi
+#                  <ESP>/EFI/tscsync/options       "mode=measure exit=success"
+#   all:          /usr/local/libexec/tscsync-report     clears the hang guard after boot
 #                  /usr/local/bin/tscsync-status         status command
 #                  /etc/systemd/system/tscsync-report.service
 #                  /etc/tscsync.conf                     paths detected here
-# It does not modify grub.cfg, loader.conf, boot entries, the kernel command
-# line, or firmware settings.
+# It does not modify grub.cfg, loader.conf, refind.conf, boot entries, the
+# kernel command line, or firmware settings.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 note() { echo "== $*"; }
 
-KEY= CERT= NOSIGN=0 ESP= GRUB_DIR= LOADER= CUSTOM=
+KEY= CERT= NOSIGN=0 ESP= GRUB_DIR= REFIND_DIR= LOADER= CUSTOM=
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--key) KEY=$2; shift 2 ;;
@@ -39,7 +42,8 @@ while [ $# -gt 0 ]; do
 	--loader) LOADER=$2; shift 2 ;;
 	--esp) ESP=$2; shift 2 ;;
 	--grub-dir) GRUB_DIR=$2; shift 2 ;;
-	-h | --help) sed -n '3,26p' "$0"; exit 0 ;;
+	--refind-dir) REFIND_DIR=$2; shift 2 ;;
+	-h | --help) sed -n '3,/^[^#]/{/^#/p}' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
 done
@@ -54,27 +58,40 @@ if [ -e /etc/tscsync.conf ]; then
 fi
 
 # --- boot loader -------------------------------------------------------------
+EFIVARS=${TSCSYNC_EFIVARS:-/sys/firmware/efi/efivars}	# override only for tests
+GV=8be4df61-93ca-11d2-aa0d-00e098032b8c	# EFI global variable GUID
+# rEFInd sets no variable of its own, but the firmware's BootCurrent entry
+# names what it started; rEFInd runs before anything it chains to.
+booted_via_refind() {
+	local cur var
+	[ -r "$EFIVARS/BootCurrent-$GV" ] || return 1
+	cur=$(od -An -tx1 -j4 -N2 "$EFIVARS/BootCurrent-$GV" | awk '{printf "%s%s", toupper($2), toupper($1)}')
+	var=$EFIVARS/Boot$cur-$GV
+	[ -r "$var" ] && tr -d '\000' <"$var" | grep -qi 'refind'
+}
 # systemd-boot records itself in the LoaderInfo EFI variable on every boot.
-LOADER_INFO=/sys/firmware/efi/efivars/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
+LOADER_INFO=$EFIVARS/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
 if [ -z "$LOADER" ]; then
-	if [ -r "$LOADER_INFO" ] && tr -d '\000' <"$LOADER_INFO" | grep -q 'systemd-boot'; then
+	if booted_via_refind; then
+		LOADER=refind
+	elif [ -r "$LOADER_INFO" ] && tr -d '\000' <"$LOADER_INFO" | grep -q 'systemd-boot'; then
 		LOADER=systemd-boot
 	elif [ -f /boot/grub2/grub.cfg ] || [ -f /boot/grub/grub.cfg ] || [ -n "$GRUB_DIR" ]; then
 		LOADER=grub
 	else
-		die "cannot tell which boot loader is in use; pass --loader grub or --loader systemd-boot"
+		die "cannot tell which boot loader is in use; pass --loader grub, systemd-boot or refind"
 	fi
 fi
 case "$LOADER" in
-grub | systemd-boot) ;;
-*) die "--loader must be grub or systemd-boot" ;;
+grub | systemd-boot | refind) ;;
+*) die "--loader must be grub, systemd-boot or refind" ;;
 esac
 [ -n "${OLD_LOADER:-}" ] && [ "$OLD_LOADER" != "$LOADER" ] &&
 	die "tscsync is installed for $OLD_LOADER; run scripts/uninstall.sh first"
 note "boot loader: $LOADER"
 
 EFI_BIN=build/tscsync.efi
-[ "$LOADER" = systemd-boot ] && EFI_BIN=build/tscsync-driver.efi
+[ "$LOADER" != grub ] && EFI_BIN=build/tscsync-driver.efi
 [ -f "$EFI_BIN" ] || die "$EFI_BIN not built (run: make)"
 if strings -el "$EFI_BIN" | grep -q 'TEST BUILD'; then
 	die "$EFI_BIN is the VM test build; rebuild with: make clean all"
@@ -130,6 +147,28 @@ if [ "$LOADER" = systemd-boot ]; then
 	[ -d "$ESP/EFI/systemd" ] || die "$ESP/EFI/systemd not found: is systemd-boot installed on $ESP?"
 	STATE_DIR=$ESP/EFI/tscsync
 	DRIVER=$ESP/EFI/systemd/drivers/tscsyncx64.efi
+	if [ -e "$DRIVER" ] && [ ! -e "$STATE_DIR/options" ]; then
+		die "$DRIVER already exists and was not installed by tscsync; not touching it"
+	fi
+fi
+
+# --- rEFInd ----------------------------------------------------------------
+# rEFInd loads every driver in drivers_<arch> (or drivers) next to its binary
+# and refind.conf, usually EFI/refind, sometimes EFI/BOOT.
+if [ "$LOADER" = refind ]; then
+	if [ -z "$REFIND_DIR" ]; then
+		if [ -f "$ESP/EFI/refind/refind.conf" ]; then
+			REFIND_DIR=$ESP/EFI/refind
+		else
+			for d in "$ESP"/EFI/*/; do
+				[ -f "${d}refind.conf" ] && { REFIND_DIR=${d%/}; break; }
+			done
+		fi
+	fi
+	[ -n "$REFIND_DIR" ] && [ -f "$REFIND_DIR/refind.conf" ] ||
+		die "no rEFInd install found on $ESP (no refind.conf); use --refind-dir"
+	STATE_DIR=$ESP/EFI/tscsync
+	DRIVER=$REFIND_DIR/drivers_x64/tscsyncx64.efi
 	if [ -e "$DRIVER" ] && [ ! -e "$STATE_DIR/options" ]; then
 		die "$DRIVER already exists and was not installed by tscsync; not touching it"
 	fi
@@ -230,13 +269,19 @@ ESP_UUID=$ESP_UUID
 EOF
 else
 	# Options first and the driver last, so the driver never runs without them.
-	install -d "$STATE_DIR" "$ESP/EFI/systemd/drivers"
+	# rEFInd shows EFI_ABORTED (systemd-boot's quiet unload) as an error, so it
+	# gets exit=success.
+	install -d "$STATE_DIR" "$(dirname "$DRIVER")"
 	rm -f "$STATE_DIR/pending" "$STATE_DIR/disabled"
-	printf 'mode=measure\n' >"$STATE_DIR/options"
+	if [ "$LOADER" = refind ]; then
+		printf 'mode=measure exit=success\n' >"$STATE_DIR/options"
+	else
+		printf 'mode=measure\n' >"$STATE_DIR/options"
+	fi
 	install -m 0644 "$tmp/tscsync.efi" "$DRIVER"
 	cat >"$tmp/tscsync.conf" <<EOF
 # Written by tscsync install.sh; read by the other tscsync scripts.
-LOADER=systemd-boot
+LOADER=$LOADER
 ESP=$ESP
 ESP_UUID=$ESP_UUID
 STATE_DIR=$STATE_DIR

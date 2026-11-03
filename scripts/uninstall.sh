@@ -8,7 +8,7 @@ set -euo pipefail
 # shellcheck source=/dev/null
 . /etc/tscsync.conf
 
-if [ "${LOADER:-grub}" = systemd-boot ]; then
+if [ "${LOADER:-grub}" != grub ]; then
 	rm -f "$DRIVER"		# first, so nothing runs from a half-removed install
 	rm -rf "$STATE_DIR"
 else

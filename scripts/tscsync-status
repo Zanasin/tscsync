@@ -13,9 +13,9 @@ echo "settings            :"
 if [ -r /etc/tscsync.conf ]; then
 	# shellcheck source=/dev/null
 	. /etc/tscsync.conf
-	if [ "${LOADER:-grub}" = systemd-boot ]; then
+	if [ "${LOADER:-grub}" != grub ]; then
 		if [ -r "$STATE_DIR/options" ]; then
-			echo "  loader: systemd-boot"
+			echo "  loader: $LOADER"
 			echo "  options: $(cat "$STATE_DIR/options")"
 			[ -e "$STATE_DIR/disabled" ] && echo "  disabled (set-mode off, or the hang guard)"
 			[ -e "$STATE_DIR/pending" ] && echo "  hang guard pending"

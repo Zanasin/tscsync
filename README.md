@@ -10,7 +10,7 @@ clocksource: Switched to clocksource hpet
 
 If your kernel log shows those lines on every boot, your firmware (BIOS) is
 handing over with the CPU cores' Time Stamp Counters out of sync. tscsync is a
-small UEFI program that runs from the boot loader (GRUB or systemd-boot)
+small UEFI program that runs from the boot loader (GRUB, systemd-boot or rEFInd)
 just before Linux, measures every
 core's TSC, moves the lagging ones forward until they agree, and then checks
 the result with a test modelled on the kernel's own.
@@ -56,12 +56,11 @@ stay on and confirm the result.
 
 ## How it works
 
-1. GRUB runs `tscsync.efi` before showing its menu; systemd-boot loads the
-   same code as a driver (`EFI/systemd/drivers/tscsyncx64.efi`) before its
-   menu. rEFInd can load that driver from `EFI/refind/drivers_x64/` instead
-   (use only one of those locations). Under rEFInd, add `exit=success` to
-   `EFI/tscsync/options` so the driver returns success instead of the
-   `EFI_ABORTED` status systemd-boot uses for a quiet unload.
+1. GRUB runs `tscsync.efi` before showing its menu. systemd-boot and rEFInd
+   load the same code as a driver before theirs
+   (`EFI/systemd/drivers/tscsyncx64.efi`, or `drivers_x64/tscsyncx64.efi` in
+   rEFInd's folder). If two loaders each start a copy in one boot (rEFInd
+   chaining to systemd-boot), only the first one runs.
 2. It asks every core for its TSC through the firmware's MP services and
    measures each core's offset against the boot processor (BSP).
 3. In sync mode it moves counters **forward only**: the BSP catches up to the
@@ -79,7 +78,8 @@ The whole run takes about 0.6 s. Details and measurements:
 - It never writes flash, NVRAM or firmware settings. The TSC registers it
   changes reset at power-off, and its report is a RAM-only EFI variable. Its
   only disk writes are its own hang-guard flag: in grubenv with GRUB, or small
-  files in `EFI/tscsync/` on the EFI system partition with systemd-boot.
+  files in `EFI/tscsync/` on the EFI system partition with systemd-boot or
+  rEFInd.
 - `install.sh` starts in read-only measure mode. You switch to sync only after
   you've seen the numbers.
 - Large corrections only move counters forward. Backward steps are capped at
@@ -88,8 +88,8 @@ The whole run takes about 0.6 s. Details and measurements:
   (the hang guard). Booting another OS from the boot menu counts too; run
   `sudo scripts/set-mode.sh sync` to turn it back on.
 - Secure Boot stays on. The binary is signed with a Machine Owner Key (MOK)
-  you already have or create once, or with systemd-boot, a key in the
-  firmware's db such as sbctl's.
+  you already have or create once, or a key in the firmware's db such as
+  sbctl's (the reliable choice with systemd-boot).
 - If anything goes wrong, Linux falls back to HPET, the same as it would
   without tscsync.
 - In sync mode it refuses unfamiliar hardware (CPUs with `TSC_ADJUST`, without
@@ -100,10 +100,13 @@ risk; the MIT license applies.
 
 ## Requirements
 
-- x86_64 UEFI system booting Linux with **GRUB** or **systemd-boot**
+- x86_64 UEFI system booting Linux with **GRUB**, **systemd-boot** or **rEFInd**
 - GRUB: its config directory on ext2/3/4 or FAT (needed for the hang guard)
-- systemd-boot: nothing extra; the settings and the hang guard are small
-  files in `EFI/tscsync/` on the EFI system partition
+- systemd-boot and rEFInd: nothing extra; the settings and the hang guard are
+  small files in `EFI/tscsync/` on the EFI system partition. Under rEFInd the
+  installer also sets `exit=success`, because rEFInd shows the driver's
+  default exit status (`EFI_ABORTED`, which systemd-boot needs for a quiet
+  unload) as a yellow error.
 - systemd
 - Build tools: `gcc`, `make`, `binutils`, `curl`
 - With Secure Boot: `sbsigntools` and an enrolled MOK, or your own `sbctl`
@@ -149,8 +152,8 @@ passed.
 
 | Command | What it does |
 |---|---|
-| `sudo scripts/install.sh` | Detects GRUB or systemd-boot, the EFI partition and a signing key, installs in measure mode |
-| `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd (see above) |
+| `sudo scripts/install.sh` | Detects GRUB, systemd-boot or rEFInd, the EFI partition and a signing key, installs in measure mode |
+| `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success\|--no-exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd and is kept across later changes |
 | `tscsync-status` | Clocksource, kernel TSC messages, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
@@ -166,7 +169,8 @@ passed.
 - If the boot loader itself becomes unusable (it shouldn't), boot a live USB
   and mount the partition holding the files. GRUB: delete `custom.cfg` in
   GRUB's config directory. systemd-boot: delete
-  `EFI/systemd/drivers/tscsyncx64.efi` on the EFI system partition.
+  `EFI/systemd/drivers/tscsyncx64.efi` on the EFI system partition. rEFInd:
+  delete `tscsyncx64.efi` from `drivers_x64` in rEFInd's folder.
 
 ## After a BIOS update
 

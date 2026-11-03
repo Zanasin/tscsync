@@ -857,6 +857,34 @@ static void load_options_file(EFI_FILE_HANDLE root)
 	opts = opt_buf;
 }
 
+/*
+ * TRUE if tscsync already ran earlier in this boot: its result variable is
+ * volatile, so it exists only between a reset and the OS. This happens when
+ * two loaders each start a copy, e.g. rEFInd loads the driver and then
+ * chains to systemd-boot, which loads its own. Without this check the second
+ * copy would find the first copy's hang guard and switch tscsync off.
+ */
+static BOOLEAN already_ran_this_boot(void)
+{
+	UINTN size = 0;
+	UINT32 attr;
+	EFI_STATUS st = uefi_call_wrapper(RT->GetVariable, 5, u"TscSyncResult", &result_guid,
+					  &attr, &size, NULL);
+
+	return st == EFI_BUFFER_TOO_SMALL;
+}
+
+/* Driver only: read the options file without touching the hang guard. */
+static void driver_read_options(EFI_LOADED_IMAGE *li)
+{
+	EFI_FILE_HANDLE root = LibOpenRoot(li->DeviceHandle);
+
+	if (!root)
+		return;
+	load_options_file(root);
+	uefi_call_wrapper(root->Close, 1, root);
+}
+
 /* Returns TRUE when tscsync should run, with opts set from the options file. */
 static BOOLEAN sdboot_setup(EFI_LOADED_IMAGE *li)
 {
@@ -958,6 +986,15 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	BOOLEAN driver = li->ImageCodeType == EfiBootServicesCode;
 	EFI_STATUS done_status = EFI_SUCCESS;
 
+	if (already_ran_this_boot()) {
+		/* Keep the first run's result and hang guard; return quietly. */
+		if (driver) {
+			driver_read_options(li);
+			if (!has_token(u"exit=success"))
+				done_status = EFI_ABORTED;
+		}
+		return done_status;
+	}
 	if (driver) {
 		BOOLEAN run = sdboot_setup(li);
 

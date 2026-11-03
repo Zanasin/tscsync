@@ -31,7 +31,7 @@ for arg in "$@"; do
 	esac
 done
 
-if [ "${LOADER:-grub}" != systemd-boot ]; then
+if [ "${LOADER:-grub}" = grub ]; then
 	# Only the driver build (systemd-boot or rEFInd) reads exit=success; the
 	# GRUB application always returns EFI_SUCCESS, so don't put it in grubenv.
 	if [ -n "$exit_tok" ] || [ -n "$clear_exit" ]; then
@@ -44,7 +44,7 @@ elif [ -z "$exit_tok" ] && [ -z "$clear_exit" ] &&
 	exit_tok=" exit=success"
 fi
 
-if [ "${LOADER:-grub}" = systemd-boot ]; then
+if [ "${LOADER:-grub}" != grub ]; then
 	# The driver reads these files on the ESP (see src/tscsync.c, sdboot_setup).
 	rm -f "$STATE_DIR/pending"
 	if [ "$mode" = off ]; then
