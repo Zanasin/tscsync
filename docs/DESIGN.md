@@ -200,3 +200,4 @@ behaviour in KVM is also only faithful when the host's own TSC is stable.
 | 1.5 | ~0.5 s boot cost instead of ~5 s; plausibility filter on the landing-error estimate |
 | 2.0 | General release: any warp pattern (forward-only), AMD/Hygon Zen families, distro-independent installer, warp-test gate on AP corrections |
 | 2.1 | systemd-boot support (driver build, state files on the ESP); re-measure small misses in read-only passes and report `UNSURE` instead of `BAD` when the offset is within the measurement error; hang guard also cleared on offline-update boots |
+| 2.2 | rEFInd support (installer detects it from `BootCurrent`, driver in rEFInd's `drivers_x64`, `exit=success` so rEFInd shows no error); a second copy in the same boot returns at once instead of tripping the hang guard; `tscsync-status` says whether the warp check or the clocksource watchdog dropped the TSC; warp-free misses no longer promise an HPET fallback |
