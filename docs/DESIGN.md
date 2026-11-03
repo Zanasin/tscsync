@@ -68,6 +68,15 @@ clean, and the round trip was slower than the fastest one seen for that AP
 this boot by at least twice the offset, the AP is reported as `UNSURE`
 rather than `BAD`: tscsync cannot tell, and the kernel's check decides.
 
+An AP that is still past the limit but warp-free stays `BAD`, marked
+`(past the limit, no warps)`, and when every failure is like that the
+`RESULT` line no longer promises an HPET fallback. Neither the offset nor the
+round trip predicts the kernel's verdict here: on the 16ADR10 the kernel
+rejected APs at +38..+51 cycles with round trips of 200–850 cycles, while on
+a ThinkPad E595 it accepted -34..+45 at 300–500 cycles. A looser limit such
+as half the round trip would have passed the 16ADR10 case. Only warps the
+test sees mean a sure fallback.
+
 ### Correcting
 
 Writes use `wrmsr(0x10, rdtsc() + delta)` right after a TSC tick edge, so the

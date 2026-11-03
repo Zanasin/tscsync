@@ -661,6 +661,13 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 			 */
 			r->uncertain = TRUE;
 			note = u"(offset within measurement error, no warps)";
+		} else if (!*ok && !fix) {
+			/*
+			 * Warp-free but past the limit. Some machines keep the TSC
+			 * here (+45 on an E595), others do not (+38 on a Legion), so
+			 * only the kernel's own check can tell.
+			 */
+			note = u"(past the limit, no warps)";
 		}
 	}
 	uefi_call_wrapper(BS->RestoreTPL, 1, old_tpl);
@@ -914,6 +921,8 @@ out:
 	return run;
 }
 
+static UINTN pass_warp_free;	/* last pass: not-OK APs that saw no warps */
+
 /*
  * One pass over every enabled AP. Returns the number of APs that are not OK
  * (*n_unsure of them only uncertain) and fills the survey arrays when they
@@ -925,6 +934,7 @@ static UINTN ap_pass(EFI_MP_SERVICES_PROTOCOL *mp, UINTN nproc, UINTN bsp, BOOLE
 {
 	UINTN good = 0, bad = 0, unsure = 0;
 
+	pass_warp_free = 0;
 	if (n_measured)
 		*n_measured = 0;
 	for (UINTN i = 0; i < nproc && i < MAX_CPUS; i++) {
@@ -951,6 +961,8 @@ static UINTN ap_pass(EFI_MP_SERVICES_PROTOCOL *mp, UINTN nproc, UINTN bsp, BOOLE
 			unsure++;
 		else
 			bad++;
+		if (!ok && m && warp_clean(&r))
+			pass_warp_free++;
 	}
 	if (unsure)
 		out(u"  %lu ok, %lu unsure, %lu not ok\n", (UINT64)good, (UINT64)unsure, (UINT64)bad);
@@ -1189,6 +1201,10 @@ result:
 	else if (bad == unsure)
 		out(u"RESULT: no warps, but %lu offsets are within measurement error of the limit "
 		    u"(the kernel's check decides; see tscsync-status)\n", (UINT64)unsure);
+	else if (pass_warp_free == bad)
+		out(u"RESULT: no warps, but %lu APs are past the verify limit; the kernel's check "
+		    u"decides (some machines keep the TSC at these offsets; see tscsync-status)\n",
+		    (UINT64)bad);
 	else
 		out(u"RESULT: some APs out of sync (Linux will fall back to HPET)\n");
 done:

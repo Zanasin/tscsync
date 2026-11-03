@@ -146,7 +146,9 @@ current clocksource : tsc
 A core marked `UNSURE` passed the warp test, but its offset reading was taken
 over a slower round trip than usual, so tscsync cannot tell whether it is in
 sync. The kernel's own check decides: if `current clocksource` is `tsc`, it
-passed.
+passed. The same goes for a core marked `BAD` with `(past the limit, no
+warps)`: some machines keep the TSC at those offsets, others don't. If
+Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 
 ## Commands
 
@@ -154,7 +156,7 @@ passed.
 |---|---|
 | `sudo scripts/install.sh` | Detects GRUB, systemd-boot or rEFInd, the EFI partition and a signing key, installs in measure mode |
 | `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success\|--no-exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd and is kept across later changes |
-| `tscsync-status` | Clocksource, kernel TSC messages, and this boot's tscsync report |
+| `tscsync-status` | Clocksource, kernel TSC messages with a one-line verdict on why the TSC was kept or dropped, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
 | `sudo tools/idle-bench.sh 300` | Idle temperature, sleep states and CPU power, for before/after comparisons |
@@ -171,6 +173,35 @@ passed.
   GRUB's config directory. systemd-boot: delete
   `EFI/systemd/drivers/tscsyncx64.efi` on the EFI system partition. rEFInd:
   delete `tscsyncx64.efi` from `drivers_x64` in rEFInd's folder.
+
+## If Linux still drops the TSC
+
+The `verdict` line of `tscsync-status` says which kernel check dropped it.
+
+- **The kernel's warp check failed:** the cores were out of sync when Linux
+  started. Check that the report says `mode=sync` and read its `RESULT` line.
+- **Clocksource watchdog, frequency skew:** the warp check passed, so the sync
+  held. Later the kernel compared the TSC with HPET over one half-second
+  window, and something disturbed that window (on a ThinkPad E595, the skew
+  flipped sign between boots while the TSC rate itself was steady). tscsync
+  runs before Linux and can't affect this. The kernel option `tsc=nowatchdog`
+  turns off only this later check; the warp check at boot stays on, so a
+  failed sync still falls back to HPET. Don't use `tsc=reliable`: it skips the
+  warp check too and would hide a failed sync.
+
+`tsc=nowatchdog` also turns off the watchdog's later check for cores drifting
+apart after boot, so add it only if the verdict shows frequency skew. On
+Fedora with GRUB:
+
+```sh
+sudo grubby --update-kernel=ALL --args=tsc=nowatchdog
+```
+
+Undo with `--remove-args=tsc=nowatchdog`. Elsewhere, add it where the kernel
+command line lives: `GRUB_CMDLINE_LINUX` in `/etc/default/grub`, then
+regenerate `grub.cfg`; with systemd-boot, `/etc/kernel/cmdline` (used for
+new kernels) and the `options` line of the current entry. After a reboot,
+`tscsync-status` shows `(tsc=nowatchdog is set)`.
 
 ## After a BIOS update
 

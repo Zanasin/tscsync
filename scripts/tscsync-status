@@ -6,9 +6,26 @@ cs=/sys/devices/system/clocksource/clocksource0
 echo "current clocksource : $(cat $cs/current_clocksource)"
 echo "available           : $(cat $cs/available_clocksource)"
 echo "kernel TSC check    :"
-journalctl -k -b 0 -q --no-pager 2>/dev/null |
-	grep -E 'TSC warp|Marking TSC unstable|clocksource: Switched to clocksource' |
-	sed 's/^/  /'
+klog=$(journalctl -k -b 0 -q --no-pager 2>/dev/null |
+	grep -E 'TSC warp|warped randomly|Marking TSC unstable|Marking clocksource tsc unstable|Watchdog .*interval|Clocksource .*interval|CPU[0-9]+ +[0-9]+ < CPU|read timed out|Refined TSC|clocksource: Switched to clocksource')
+[ -n "$klog" ] && sed 's/^/  /' <<<"$klog"
+# Why the kernel kept or dropped the TSC: the boot-time warp check, or the
+# clocksource watchdog later on (which tscsync cannot affect).
+if [ "$(cat $cs/current_clocksource)" = tsc ]; then
+	verdict="TSC in use"
+elif grep -qE 'TSC warp|warped randomly|check_tsc_sync_source failed' <<<"$klog"; then
+	verdict="the kernel's warp check failed: the TSCs were out of sync at boot"
+elif grep -q 'Marking clocksource tsc unstable due to frequency skew' <<<"$klog"; then
+	verdict="warp check passed; TSC dropped later by the clocksource watchdog (frequency skew), not by an offset; see tsc=nowatchdog in the README"
+elif grep -q 'Marking clocksource tsc unstable due to inter CPU skew' <<<"$klog"; then
+	verdict="warp check passed at boot; TSC dropped later by the clocksource watchdog (inter-CPU skew: the TSCs drifted apart after boot)"
+elif grep -q 'Marking TSC unstable' <<<"$klog"; then
+	verdict="TSC not in use (see the kernel lines above)"
+else
+	verdict="TSC not in use; no reason found in this boot's kernel log"
+fi
+grep -qw 'tsc=nowatchdog' /proc/cmdline && verdict="$verdict (tsc=nowatchdog is set)"
+echo "verdict             : $verdict"
 echo "settings            :"
 if [ -r /etc/tscsync.conf ]; then
 	# shellcheck source=/dev/null
