@@ -154,13 +154,13 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 
 | Command | What it does |
 |---|---|
-| `sudo scripts/install.sh` | Detects GRUB, systemd-boot or rEFInd, the EFI partition and a signing key, installs in measure mode |
+| `sudo scripts/install.sh [--measure]` | Detects GRUB, systemd-boot or rEFInd, the EFI partition and a signing key, installs in measure mode; a reinstall keeps the current mode unless given `--measure` |
 | `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success\|--no-exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd and is kept across later changes |
 | `tscsync-status` | Clocksource, kernel TSC messages with a one-line verdict on why the TSC was kept or dropped, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
 | `sudo tools/idle-bench.sh 300` | Idle temperature, sleep states and CPU power, for before/after comparisons |
-| `vmtest/run.sh` | Runs the test suite in QEMU/OVMF VMs via podman (needs `/dev/kvm` and the host `kvm` group; uses `--group-add keep-groups` for rootless podman) |
+| `vmtest/run.sh` | Runs the test suite in QEMU/OVMF VMs via podman (needs `/dev/kvm`; where it is group-only, membership in the `kvm` group) |
 
 ## Recovery
 
@@ -173,6 +173,16 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
   GRUB's config directory. systemd-boot: delete
   `EFI/systemd/drivers/tscsyncx64.efi` on the EFI system partition. rEFInd:
   delete `tscsyncx64.efi` from `drivers_x64` in rEFInd's folder.
+
+## Updating
+
+```sh
+git pull && make
+sudo scripts/install.sh            # keeps your current mode (since 2.2.1)
+```
+
+If tscsync was off (`set-mode.sh off`, or the hang guard switched it off), the
+reinstall starts in measure mode.
 
 ## If Linux still drops the TSC
 

@@ -1,8 +1,11 @@
 #!/usr/bin/bash
 # SPDX-License-Identifier: MIT
 # Install tscsync in MEASURE mode (read-only: it writes nothing to the CPU).
+# Reinstalling (for example after git pull) keeps the current mode, measure or
+# sync with its options, unless tscsync was off; then it starts in measure.
 #
 # Usage: sudo scripts/install.sh [options]
+#   --measure                start in measure mode even when reinstalling
 #   --key FILE --cert FILE   Secure Boot signing key and certificate (PEM key,
 #                            PEM or DER cert) enrolled as a MOK or in db
 #   --no-sign                install unsigned (only if Secure Boot is off, or
@@ -35,7 +38,7 @@ cd "$(dirname "$0")/.."
 die() { echo "install.sh: $*" >&2; exit 1; }
 note() { echo "== $*"; }
 
-KEY= CERT= NOSIGN=0 ESP= GRUB_DIR= REFIND_DIR= LOADER= CUSTOM=
+KEY= CERT= NOSIGN=0 ESP= GRUB_DIR= REFIND_DIR= LOADER= CUSTOM= RESET=0
 while [ $# -gt 0 ]; do
 	case "$1" in
 	--key) KEY=$2; shift 2 ;;
@@ -45,6 +48,7 @@ while [ $# -gt 0 ]; do
 	--esp) ESP=$2; shift 2 ;;
 	--grub-dir) GRUB_DIR=$2; shift 2 ;;
 	--refind-dir) REFIND_DIR=$2; shift 2 ;;
+	--measure) RESET=1; shift ;;
 	-h | --help) sed -n '3,/^[^#]/{/^#/p}' "$0"; exit 0 ;;
 	*) die "unknown option $1 (see --help)" ;;
 	esac
@@ -54,9 +58,35 @@ done
 [ "$(uname -m)" = x86_64 ] || die "only x86_64 is supported"
 [ -d /sys/firmware/efi ] || die "not booted in UEFI mode"
 command -v systemctl >/dev/null || die "systemd is required (it clears the hang guard after boot)"
+# The mode set-mode.sh last wrote, if tscsync is on: "mode=sync allow=any-cpu".
+# Off (set-mode off, or the hang guard) gives nothing, so the reinstall starts
+# in measure mode, as a first install does.
+current_mode() (
+	# shellcheck source=/dev/null
+	. /etc/tscsync.conf
+	if [ "${LOADER:-grub}" = grub ]; then
+		env=$("$EDITENV" "$GRUBENV" list 2>/dev/null) || exit 0
+		grep -qx 'tscsync_enable=1' <<<"$env" || exit 0
+		sed -n 's/^tscsync_mode=//p' <<<"$env"
+	else
+		[ -r "$STATE_DIR/options" ] && [ ! -e "$STATE_DIR/disabled" ] || exit 0
+		sed 's/ exit=success//' "$STATE_DIR/options"
+	fi
+)
+OLD_MODE= OLD_EXIT=
 if [ -e /etc/tscsync.conf ]; then
 	# shellcheck source=/dev/null
 	OLD_LOADER=$(. /etc/tscsync.conf; echo "${LOADER:-grub}")
+	OLD_MODE=$(current_mode | head -n1)
+	# shellcheck source=/dev/null
+	OLD_EXIT=$(. /etc/tscsync.conf; [ -n "${STATE_DIR:-}" ] &&
+		grep -qw 'exit=success' "$STATE_DIR/options" 2>/dev/null && echo " exit=success" || true)
+fi
+MODE=mode=measure
+if [ "$RESET" = 0 ] && [[ "$OLD_MODE" =~ ^mode=(measure|sync)( allow=any-cpu)?$ ]]; then
+	MODE=$OLD_MODE
+elif [ -n "${OLD_LOADER:-}" ] && [ "$RESET" = 0 ]; then
+	note "tscsync was off (set-mode off, or the hang guard); reinstalling in measure mode"
 fi
 
 # --- boot loader -------------------------------------------------------------
@@ -275,11 +305,10 @@ else
 	# gets exit=success.
 	install -d "$STATE_DIR" "$(dirname "$DRIVER")"
 	rm -f "$STATE_DIR/pending" "$STATE_DIR/disabled"
-	if [ "$LOADER" = refind ]; then
-		printf 'mode=measure exit=success\n' >"$STATE_DIR/options"
-	else
-		printf 'mode=measure\n' >"$STATE_DIR/options"
-	fi
+	# A reinstall also keeps exit=success if it was set by hand.
+	EXIT_TOK=$OLD_EXIT
+	[ "$LOADER" = refind ] && EXIT_TOK=" exit=success"
+	printf '%s%s\n' "$MODE" "$EXIT_TOK" >"$STATE_DIR/options"
 	install -m 0644 "$tmp/tscsync.efi" "$DRIVER"
 	cat >"$tmp/tscsync.conf" <<EOF
 # Written by tscsync install.sh; read by the other tscsync scripts.
@@ -309,14 +338,23 @@ command -v restorecon >/dev/null && restorecon -F ${CUSTOM:+"$CUSTOM"} /etc/tscs
 systemctl daemon-reload
 systemctl reenable tscsync-report.service
 
-note "enabling in measure mode"
+note "enabling: $MODE"
 if [ "$LOADER" = grub ]; then
-	"$EDITENV" "$GRUBENV" set tscsync_enable=1 tscsync_mode=mode=measure tscsync_pending=0
+	"$EDITENV" "$GRUBENV" set tscsync_enable=1 "tscsync_mode=$MODE" tscsync_pending=0
 	"$EDITENV" "$GRUBENV" list | grep '^tscsync'
 else
 	echo "options: $(cat "$STATE_DIR/options")"
 fi
 
+if [ "$MODE" != mode=measure ]; then
+	cat <<EOF
+
+Reinstalled, keeping the current mode: $MODE
+  loader: $LOADER   ESP: $ESP ($ESP_UUID)   signed: $([ "$NOSIGN" = 1 ] && echo no || echo yes)
+To start over in measure mode: sudo scripts/set-mode.sh measure
+EOF
+	exit 0
+fi
 cat <<EOF
 
 Installed in MEASURE mode (read-only).
