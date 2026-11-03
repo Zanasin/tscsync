@@ -24,6 +24,8 @@
 #   all:          /usr/local/libexec/tscsync-report     clears the hang guard after boot
 #                  /usr/local/bin/tscsync-status         status command
 #                  /etc/systemd/system/tscsync-report.service
+#                    (RequiresMountsFor= set to the hang-guard filesystem:
+#                     grubenv's mount for GRUB, or the ESP for drivers)
 #                  /etc/tscsync.conf                     paths detected here
 # It does not modify grub.cfg, loader.conf, refind.conf, boot entries, the
 # kernel command line, or firmware settings.
@@ -291,7 +293,16 @@ fi
 install -m 0644 "$tmp/tscsync.conf" /etc/tscsync.conf
 install -D -m 0755 boot/tscsync-report /usr/local/libexec/tscsync-report
 install -m 0755 scripts/tscsync-status /usr/local/bin/tscsync-status
-install -m 0644 boot/tscsync-report.service /etc/systemd/system/tscsync-report.service
+# Hang guard lives on grubenv (GRUB) or EFI/tscsync on the ESP (drivers).
+# Hardcoding /boot breaks installs whose ESP is /boot/efi or /efi.
+if [ "$LOADER" = grub ]; then
+	REQUIRES_MOUNTS=$(findmnt -no TARGET -T "$GRUBENV")
+else
+	REQUIRES_MOUNTS=$(findmnt -no TARGET -T "$STATE_DIR")
+fi
+[ -n "$REQUIRES_MOUNTS" ] || die "cannot find the mount point for the hang guard"
+sed "s|@REQUIRES_MOUNTS@|$REQUIRES_MOUNTS|" boot/tscsync-report.service.in >"$tmp/tscsync-report.service"
+install -m 0644 "$tmp/tscsync-report.service" /etc/systemd/system/tscsync-report.service
 command -v restorecon >/dev/null && restorecon -F ${CUSTOM:+"$CUSTOM"} /etc/tscsync.conf \
 	/usr/local/libexec/tscsync-report /usr/local/bin/tscsync-status \
 	/etc/systemd/system/tscsync-report.service 2>/dev/null || true
