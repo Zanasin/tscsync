@@ -171,7 +171,9 @@ measures it with the BSP's TSC, which tscsync moves forward.
 
 `vmtest/run.sh` boots GRUB and tscsync, then systemd-boot and the tscsync
 driver, in QEMU/OVMF VMs (8 vCPUs) inside a podman container, using the real
-`custom.cfg` hook and systemd-boot's own driver loading:
+`custom.cfg` hook and systemd-boot's own driver loading. Rootless podman is
+passed `--group-add keep-groups` so the host `kvm` group still applies when
+opening `/dev/kvm`:
 
 - release build in measure mode, and in sync mode where sync must be refused;
 - test build (`make test`) that first creates a warp, in three patterns:
