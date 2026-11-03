@@ -136,13 +136,17 @@ measures it with the BSP's TSC, which tscsync moves forward.
   unloads one that returns `EFI_ABORTED` without logging an error. The same
   code is built as such a driver (`build/tscsync-driver.efi`, installed as
   `tscsyncx64.efi`); it detects that it was loaded as a driver and returns
-  `EFI_ABORTED`. It gets no load options and there is no grubenv, so its
-  state is three small files in `\EFI\tscsync` on the same ESP:
-  `options` (e.g. `mode=sync`, written by `set-mode.sh`), `disabled`
-  (`set-mode.sh off`, or the hang guard) and `pending` (the hang guard:
-  created before any work, deleted by `tscsync-report.service`; found at the
-  next boot, it creates `disabled`). If `pending` cannot be written, the
-  driver does nothing.
+  `EFI_ABORTED` by default. rEFInd can load the same binary from
+  `EFI/refind/drivers_x64/`, but treats `EFI_ABORTED` as a yellow error
+  after a successful run; add `exit=success` to `\EFI\tscsync\options`
+  (e.g. `mode=sync exit=success`, or `set-mode.sh sync --exit-success`)
+  to return `EFI_SUCCESS` instead. Do not install the driver under both
+  loaders at once: a same-session double-load trips the hang guard. State
+  is three small files in `\EFI\tscsync` on the same ESP: `options`,
+  `disabled` (`set-mode.sh off`, or the hang guard) and `pending` (the hang
+  guard: created before any work, deleted by `tscsync-report.service`; found
+  at the next boot, it creates `disabled`). If `pending` cannot be written,
+  the driver does nothing.
 - The report is stored in the volatile EFI variable
   `TscSyncResult-950a48f2-b67d-4798-a024-88b7bf386000` and copied to
   `/run/tscsync-result.txt` at boot.

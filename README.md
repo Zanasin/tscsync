@@ -58,7 +58,10 @@ stay on and confirm the result.
 
 1. GRUB runs `tscsync.efi` before showing its menu; systemd-boot loads the
    same code as a driver (`EFI/systemd/drivers/tscsyncx64.efi`) before its
-   menu.
+   menu. rEFInd can load that driver from `EFI/refind/drivers_x64/` instead
+   (use only one of those locations). Under rEFInd, add `exit=success` to
+   `EFI/tscsync/options` so the driver returns success instead of the
+   `EFI_ABORTED` status systemd-boot uses for a quiet unload.
 2. It asks every core for its TSC through the firmware's MP services and
    measures each core's offset against the boot processor (BSP).
 3. In sync mode it moves counters **forward only**: the BSP catches up to the
@@ -147,7 +150,7 @@ passed.
 | Command | What it does |
 |---|---|
 | `sudo scripts/install.sh` | Detects GRUB or systemd-boot, the EFI partition and a signing key, installs in measure mode |
-| `sudo scripts/set-mode.sh measure\|sync\|off` | Switches mode for the next boot |
+| `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd (see above) |
 | `tscsync-status` | Clocksource, kernel TSC messages, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
