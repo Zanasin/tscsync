@@ -160,7 +160,7 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
 | `sudo tools/idle-bench.sh 300` | Idle temperature, sleep states and CPU power, for before/after comparisons |
-| `vmtest/run.sh` | Runs the test suite in QEMU/OVMF VMs via podman |
+| `vmtest/run.sh` | Runs the test suite in QEMU/OVMF VMs via podman (needs `/dev/kvm` and the host `kvm` group; uses `--group-add keep-groups` for rootless podman) |
 
 ## Recovery
 
