@@ -210,8 +210,8 @@ fi
 SB=0
 if mokutil --sb-state 2>/dev/null | grep -q 'SecureBoot enabled'; then
 	SB=1
-elif [ -r /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c ] &&
-	[ "$(od -An -tu1 -j4 -N1 /sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c | tr -d ' ')" = 1 ]; then
+elif [ -r "$EFIVARS/SecureBoot-$GV" ] &&
+	[ "$(od -An -tu1 -j4 -N1 "$EFIVARS/SecureBoot-$GV" | tr -d ' ')" = 1 ]; then
 	SB=1
 fi
 
@@ -243,8 +243,16 @@ else
 				break
 			fi
 		done
+		# With Secure Boot off, signing with a key found lying around (say a
+		# leftover DKMS key) is only a convenience for turning it on later,
+		# so a missing sbsign must not stop the install.
+		if [ -n "$KEY" ] && [ "$SB" = 0 ] && ! command -v sbsign >/dev/null; then
+			echo "Secure Boot is off and sbsign is not installed: installing unsigned (found $KEY; install sbsigntools to sign with it)."
+			KEY= CERT=
+			NOSIGN=1
+		fi
 	fi
-	if [ -z "$KEY" ]; then
+	if [ -z "$KEY" ] && [ "$NOSIGN" = 0 ]; then
 		[ "$SB" = 1 ] && die "Secure Boot is on and no signing key was found; see docs/SECURE-BOOT.md, then use --key/--cert"
 		echo "Secure Boot is off and no key was found: installing unsigned."
 		NOSIGN=1

@@ -12,6 +12,8 @@ distribution, and `tscsync-status` output).
 | Lenovo Legion Pro 5 16ADR10 | Ryzen 9 8940HX | RLCN32WW | BSP 4.8–5.0e9 cycles behind all 31 APs | v2.0.0 (Gentoo): verify 31/31 clean, 285 ms, TSC kept |
 | Lenovo IdeaPad 5 2-in-1 14AHP9 | Ryzen 7 8845HS | P1CN32WW | BSP 3.76e9 cycles behind all 15 APs | v2.0.0: TSC kept; verify flagged 4 APs at -28..-42 cycles that the kernel accepted (slow round trips; reported as `UNSURE` since v2.1) |
 | Lenovo Legion Pro 5 | Ryzen 9 8940HX | — | — (32 logical CPUs) | v2.1.0 `mode=sync`, driver loaded by rEFInd (then rEFInd → systemd-boot or a UKI): TSC kept; rEFInd showed a cosmetic yellow `ABORT`, fixed in v2.2 |
+| Lenovo Legion 7 16ACHg6 (82N6) | Ryzen 9 5900HX | GKCN65WW | BSP 9.88e9 cycles (~3.0 s) behind all 15 APs, which agree within 26 cycles | v2.2.1 (AUR, Arch, GRUB): BSP corrected in 5 iterations, verify 15/15 clean, 157 ms, TSC kept; `clock_gettime` ~1320 ns → ~20 ns. Resume not tested |
+| Lenovo Legion 5 gen 6 | Ryzen 5 5600H | — | — | v2.2.0/2.2.1 (Fedora): TSC lost after resume from deep sleep (S3), which tscsync cannot cover; see "Sleep" in the README |
 | Lenovo ThinkPad E595 (20NF) | Ryzen 5 3500U | R11ET48P (1.28), R11ET50P (1.30) | BSP 6.2–9.9e9 cycles (~3 s) behind all 7 APs, 40 of 40 boots | v2.1.0: sync clean on every boot and the kernel's warp check passed. 1.28: TSC kept. 1.30: on 2 of 2 boots the clocksource watchdog then dropped the TSC for frequency skew (see "If Linux still drops the TSC" in the README); verify flagged warp-free APs at -34..+45 cycles that the kernel accepted |
 
 ## Reported with the same symptom (not yet tested with tscsync)

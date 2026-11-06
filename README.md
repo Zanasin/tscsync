@@ -17,7 +17,9 @@ the result with a test modelled on the kernel's own.
 
 On a Legion Pro 5 16ADR10 this turned a 5.2-billion-cycle warp (about 2 s) on
 every boot into cores that agree to within about ±10 cycles, and Linux kept
-the TSC on every cold boot, reboot and resume from sleep.
+the TSC on every cold boot and reboot. It also kept it after resume from deep
+sleep (S3), but that is down to the firmware's resume path, not tscsync: see
+[Sleep](#sleep).
 
 ## Do I need it?
 
@@ -115,6 +117,12 @@ risk; the MIT license applies.
 
 ## Quick start
 
+On Arch Linux, the [AUR package `tscsync`](https://aur.archlinux.org/packages/tscsync)
+(maintained by mscaletjlb) installs the files under `/usr`; run
+`tscsync-setup` to install into the boot loader, then follow the steps from
+`tscsync-status` below. Its commands are named `tscsync-setup`,
+`tscsync-set-mode` and so on instead of `scripts/*.sh`. From source:
+
 ```sh
 git clone https://github.com/Zanasin/tscsync.git
 cd tscsync
@@ -183,6 +191,19 @@ sudo scripts/install.sh            # keeps your current mode (since 2.2.1)
 
 If tscsync was off (`set-mode.sh off`, or the hang guard switched it off), the
 reinstall starts in measure mode.
+
+## Sleep
+
+tscsync runs only at boot, before Linux. On resume from deep sleep (S3) the
+firmware resets the TSCs and jumps straight back into Linux, so tscsync does
+not run, and whether the cores agree afterwards depends on the firmware. On a
+Legion Pro 5 16ADR10 they do (31 of 31 resumes kept the TSC). On a Legion 5
+gen 6 (Ryzen 5 5600H) Linux drops the TSC after resume. Once Linux has
+marked the TSC unstable it doesn't use it again until the next boot, so
+nothing run after resume can bring it back. Suspend-to-idle
+(`s2idle`) keeps the TSCs running where it works. Avoid `tsc=reliable` as a
+workaround: it also skips the check at boot, so a failed sync would go
+unnoticed.
 
 ## If Linux still drops the TSC
 
