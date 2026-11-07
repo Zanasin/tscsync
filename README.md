@@ -162,13 +162,16 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 
 | Command | What it does |
 |---|---|
-| `sudo scripts/install.sh [--measure]` | Detects GRUB, systemd-boot or rEFInd, the EFI partition and a signing key, installs in measure mode; a reinstall keeps the current mode unless given `--measure` |
+| `sudo scripts/install.sh [--measure]` | Detects loader (BootCurrent/LoaderInfo, else grub→systemd-boot→rEFInd), ESP, and an *enrolled* signing key; installs in measure mode; reinstall keeps the current mode unless `--measure` |
 | `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success\|--no-exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd and is kept across later changes |
 | `tscsync-status` | Clocksource, kernel TSC messages with a one-line verdict on why the TSC was kept or dropped, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
 | `sudo tools/idle-bench.sh 300` | Idle temperature, sleep states and CPU power, for before/after comparisons |
-| `vmtest/run.sh` | Runs the test suite in QEMU/OVMF VMs via podman (needs `/dev/kvm`; where it is group-only, membership in the `kvm` group) |
+| `make check` | Fast installer policy tests (loader detect + signing key pick; synthetic keys) |
+| `sudo make check-host` | Read-only host smoke against real BootCurrent / sbctl+DKMS keys (no ESP writes) |
+| `vmtest/run.sh` | QEMU/OVMF VM suite via podman (needs `/dev/kvm`; where it is group-only, membership in the `kvm` group) |
+| `make vmtest-secboot` | Opt-in Secure Boot OVMF smokes (heavy; needs CODE + sbsign/virt-fw-vars — see `vmtest/README-secboot.md`) |
 
 ## Recovery
 
