@@ -168,7 +168,8 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |
 | `sudo tools/idle-bench.sh 300` | Idle temperature, sleep states and CPU power, for before/after comparisons |
-| `make check` | Fast installer policy tests (loader detect + signing key pick) |
+| `make check` | Fast installer policy tests (loader detect + signing key pick; synthetic keys) |
+| `sudo make check-host` | Read-only host smoke against real BootCurrent / sbctl+DKMS keys (no ESP writes) |
 | `vmtest/run.sh` | QEMU/OVMF VM suite via podman (needs `/dev/kvm`; where it is group-only, membership in the `kvm` group) |
 | `make vmtest-secboot` | Opt-in Secure Boot OVMF smokes (heavy; skipped until enrolled vars exist — see `vmtest/README-secboot.md`) |
 

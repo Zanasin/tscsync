@@ -68,9 +68,13 @@ distclean:
 check:
 	bash scripts/test-install-policy.sh
 
+# Read-only: real host keys / BootCurrent (needs root for sbctl db.*).
+check-host:
+	bash scripts/check-host-policy.sh
+
 # Heavy Secure Boot OVMF smokes (opt-in; not part of default vmtest).
 vmtest-secboot:
 	bash vmtest/run.sh --secure-boot
 
-.PHONY: all test clean distclean check vmtest-secboot
+.PHONY: all test clean distclean check check-host vmtest-secboot
 .SECONDARY:
