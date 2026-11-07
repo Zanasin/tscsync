@@ -10,24 +10,48 @@ vmtest/run.sh --secure-boot
 
 These smokes are optional and heavy. They are **not** part of the default VM suite or CI.
 
-## Intended cases
+## What they do
 
-When enrolled OVMF varstores are present under `vmtest/secboot/`:
+`run-secboot.sh` boots **q35 + SMM** with `OVMF_CODE.secboot` and an enrolled varstore:
 
-1. **GRUB + enrolled signing key** — signed `tscsync.efi` must load under Secure Boot  
-2. **systemd-boot + enrolled db key** — signed `tscsync-driver.efi` must load under Secure Boot  
+1. **systemd-boot + signed driver** — must print a `tscsync` banner and `RESULT:`
+2. **systemd-boot + unsigned driver** — must fail with Access denied (negative control)
+3. **GRUB + signed `tscsync.efi`** — same positive check, when `grub-mkstandalone` / `grub2-mkstandalone` is installed; otherwise skipped
 
-Until the QEMU runner is fully wired, `make vmtest-secboot` either **SKIP**s (missing assets) or stops with a clear “not wired yet” message after locating CODE + VARS.
+By default the runner generates an **ephemeral** PK/KEK/db (openssl + `virt-fw-vars`), signs the bootloader and tscsync images with `sbsign`, and does not touch host Secure Boot keys. No sudo.
 
-## Assets
+## Requirements
 
-| Asset | Role | Commit to git? |
-|---|---|---|
-| OVMF Secure Boot **CODE** firmware | QEMU pflash executable (`OVMF_CODE.secboot*.fd`) | **No** — use the distro package; optional local pointer file `OVMF_CODE.secboot.path` |
-| Empty OVMF **VARS** template | Starting NVRAM image from the same package | **No** |
-| `vmtest/secboot/*-vars.fd` | Enrolled varstores for the two smokes | **Never** — gitignored; may contain private PK/KEK/db material |
+| Need | Typical package |
+|---|---|
+| `OVMF_CODE.secboot*.fd` | `edk2-ovmf` / `OVMF` |
+| Matching empty `OVMF_VARS` template | same package |
+| `qemu-system-x86_64`, `sbsign`, `virt-fw-vars`, `openssl`, `mtools`, `dosfstools` | qemu, sbsigntools, python-virt-firmware, … |
+| `systemd-bootx64.efi` | systemd-boot / systemd |
+| Optional: `grub-mkstandalone` + `grub-editenv` | grub |
 
-Host firmware Secure Boot state and QEMU’s OVMF varstore are different stores. You cannot copy a machine’s live NVRAM into these files. Rebuild trust inside the VM by enrolling certificates into a fresh template (see below).
+Missing CODE → **SKIP** (exit 0). Missing required tools → hard error.
+
+`/dev/kvm` is preferred (with `ICH9-LPC.disable_s3=1`, required for OVMF+SMM). If KVM produces no serial output, the runner retries once under TCG automatically.
+
+## Optional: use your own enrolled vars
+
+To exercise a specific key (for example the same certs you enrolled for host testing):
+
+```sh
+# write matching PEMs (gitignored) and enrolled varstores:
+SEC=vmtest/secboot
+# sign.key / sign.pem must match the db cert inside *-vars.fd
+```
+
+Or:
+
+```sh
+export TSCSYNC_SECBOOT_KEY=/path/to/db.key
+export TSCSYNC_SECBOOT_CERT=/path/to/db.pem
+# optional: pre-built $SEC/sdboot-db-vars.fd enrolled with that cert
+make vmtest-secboot
+```
 
 ### Finding CODE on common distros
 
@@ -39,14 +63,7 @@ Host firmware Secure Boot state and QEMU’s OVMF varstore are different stores.
 
 If your package uses another path, write it to `vmtest/secboot/OVMF_CODE.secboot.path` (one line, absolute path). That file is local-only and gitignored via the `*.path` / `*.fd` rules under `secboot/`.
 
-## Generating enrolled VARS
-
-Requirements typically include:
-
-- Distro OVMF Secure Boot firmware package (e.g. `edk2-ovmf`)
-- A tool that can write EDK2 varstores (e.g. `virt-fw-vars` from `python-virt-firmware`, or `ovmf-vars-generator`)
-
-Example with `virt-fw-vars` and your own PEM certificates (adjust paths and GUID):
+### Generating enrolled VARS (optional override)
 
 ```sh
 SEC=vmtest/secboot
@@ -62,14 +79,11 @@ virt-fw-vars \
   --add-db "$OWNER_GUID" /path/to/db.pem \
   --secure-boot
 
-# Until a dedicated MOK enrollment case exists, the same db enrollment can
-# stand in for the GRUB smoke asset name:
 cp -a "$SEC/sdboot-db-vars.fd" "$SEC/grub-mok-vars.fd"
+# also place the matching private key as $SEC/sign.key and cert as $SEC/sign.pem
 ```
 
-For Microsoft/default test keys instead of your own, see `virt-fw-vars --enroll-microsoft` / `--enroll-redhat` and your distro’s `ovmf-vars-generator` documentation.
-
-QEMU Secure Boot OVMF usually needs a **q35** machine with **SMM** enabled; copy the enrolled VARS to a writable temp file before each run (do not mutate the committed-local originals in place if you want them reusable).
+Do **not** commit `*.fd`, `sign.key`, or `sign.pem`. Host firmware NVRAM and OVMF varstores are different; you cannot copy a machine’s live Secure Boot state into these files.
 
 ## Relationship to other tests
 

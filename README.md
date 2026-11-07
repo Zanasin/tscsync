@@ -171,7 +171,7 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 | `make check` | Fast installer policy tests (loader detect + signing key pick; synthetic keys) |
 | `sudo make check-host` | Read-only host smoke against real BootCurrent / sbctl+DKMS keys (no ESP writes) |
 | `vmtest/run.sh` | QEMU/OVMF VM suite via podman (needs `/dev/kvm`; where it is group-only, membership in the `kvm` group) |
-| `make vmtest-secboot` | Opt-in Secure Boot OVMF smokes (heavy; skipped until enrolled vars exist — see `vmtest/README-secboot.md`) |
+| `make vmtest-secboot` | Opt-in Secure Boot OVMF smokes (heavy; needs CODE + sbsign/virt-fw-vars — see `vmtest/README-secboot.md`) |
 
 ## Recovery
 
