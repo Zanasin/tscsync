@@ -65,5 +65,12 @@ clean:
 distclean:
 	rm -rf $(B)
 
-.PHONY: all test clean distclean
+check:
+	bash scripts/test-install-policy.sh
+
+# Heavy Secure Boot OVMF smokes (opt-in; not part of default vmtest).
+vmtest-secboot:
+	bash vmtest/run.sh --secure-boot
+
+.PHONY: all test clean distclean check vmtest-secboot
 .SECONDARY:

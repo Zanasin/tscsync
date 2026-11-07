@@ -33,7 +33,8 @@
 # It does not modify grub.cfg, loader.conf, refind.conf, boot entries, the
 # kernel command line, or firmware settings.
 set -euo pipefail
-cd "$(dirname "$0")/.."
+SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
+cd "$SCRIPT_DIR/.."
 
 die() { echo "install.sh: $*" >&2; exit 1; }
 note() { echo "== $*"; }
@@ -92,28 +93,11 @@ fi
 # --- boot loader -------------------------------------------------------------
 EFIVARS=${TSCSYNC_EFIVARS:-/sys/firmware/efi/efivars}	# override only for tests
 GV=8be4df61-93ca-11d2-aa0d-00e098032b8c	# EFI global variable GUID
-# rEFInd sets no variable of its own, but the firmware's BootCurrent entry
-# names what it started; rEFInd runs before anything it chains to.
-booted_via_refind() {
-	local cur var
-	[ -r "$EFIVARS/BootCurrent-$GV" ] || return 1
-	cur=$(od -An -tx1 -j4 -N2 "$EFIVARS/BootCurrent-$GV" | awk '{printf "%s%s", toupper($2), toupper($1)}')
-	var=$EFIVARS/Boot$cur-$GV
-	[ -r "$var" ] && tr -d '\000' <"$var" | grep -qi 'refind'
-}
-# systemd-boot records itself in the LoaderInfo EFI variable on every boot.
-LOADER_INFO=$EFIVARS/LoaderInfo-4a67b082-0a4c-41cf-b6c7-440b29bb8c4f
-if [ -z "$LOADER" ]; then
-	if booted_via_refind; then
-		LOADER=refind
-	elif [ -r "$LOADER_INFO" ] && tr -d '\000' <"$LOADER_INFO" | grep -q 'systemd-boot'; then
-		LOADER=systemd-boot
-	elif [ -f /boot/grub2/grub.cfg ] || [ -f /boot/grub/grub.cfg ] || [ -n "$GRUB_DIR" ]; then
-		LOADER=grub
-	else
-		die "cannot tell which boot loader is in use; pass --loader grub, systemd-boot or refind"
-	fi
-fi
+# shellcheck source=install-policy.inc.sh
+. "$SCRIPT_DIR/install-policy.inc.sh"
+# Evidence (BootCurrent / LoaderInfo) first; ambiguous fallback: grub →
+# systemd-boot → rEFInd (see install-policy.inc.sh).
+tscsync_detect_loader
 case "$LOADER" in
 grub | systemd-boot | refind) ;;
 *) die "--loader must be grub, systemd-boot or refind" ;;
@@ -223,29 +207,14 @@ if [ "$NOSIGN" = 1 ]; then
 	[ "$SB" = 1 ] && echo "WARNING: Secure Boot is on and --no-sign was given; the boot loader will refuse the tool unless you sign it yourself."
 else
 	if [ -z "$KEY" ]; then
-		# Keys that distributions already use for out-of-tree kernel modules
-		# (MOKs), and sbctl's db key. systemd-boot's drivers are checked
-		# against db, so there sbctl's key comes first.
-		MOKS="/etc/pki/akmods/private/private_key.priv:/etc/pki/akmods/certs/public_key.der
-			/var/lib/dkms/mok.key:/var/lib/dkms/mok.pub
-			/var/lib/shim-signed/mok/MOK.priv:/var/lib/shim-signed/mok/MOK.der"
-		DBKEYS="/var/lib/sbctl/keys/db/db.key:/var/lib/sbctl/keys/db/db.pem
-			/usr/share/secureboot/keys/db/db.key:/usr/share/secureboot/keys/db/db.pem"
-		if [ "$LOADER" = systemd-boot ]; then
-			CANDIDATES="$DBKEYS $MOKS"
-		else
-			CANDIDATES="$MOKS $DBKEYS"
+		# Prefer an *enrolled* key (skip leftover DKMS MOK, etc.). Order depends
+		# on loader: GRUB prefers MOK then db; systemd-boot/rEFInd prefer db then MOK.
+		if tscsync_pick_signing_key; then
+			:
 		fi
-		for pair in $CANDIDATES; do
-			if [ -f "${pair%%:*}" ] && [ -f "${pair##*:}" ]; then
-				KEY=${pair%%:*}
-				CERT=${pair##*:}
-				break
-			fi
-		done
-		# With Secure Boot off, signing with a key found lying around (say a
-		# leftover DKMS key) is only a convenience for turning it on later,
-		# so a missing sbsign must not stop the install.
+		# With Secure Boot off, signing with a key found lying around is only a
+		# convenience for turning it on later, so a missing sbsign must not stop
+		# the install.
 		if [ -n "$KEY" ] && [ "$SB" = 0 ] && ! command -v sbsign >/dev/null; then
 			echo "Secure Boot is off and sbsign is not installed: installing unsigned (found $KEY; install sbsigntools to sign with it)."
 			KEY= CERT=
@@ -253,7 +222,7 @@ else
 		fi
 	fi
 	if [ -z "$KEY" ] && [ "$NOSIGN" = 0 ]; then
-		[ "$SB" = 1 ] && die "Secure Boot is on and no signing key was found; see docs/SECURE-BOOT.md, then use --key/--cert"
+		[ "$SB" = 1 ] && die "Secure Boot is on and no usable enrolled signing key was found; see docs/SECURE-BOOT.md, then use --key/--cert or --no-sign + sbctl sign -s"
 		echo "Secure Boot is off and no key was found: installing unsigned."
 		NOSIGN=1
 	fi
@@ -268,15 +237,11 @@ if [ "$NOSIGN" = 0 ]; then
 		openssl x509 -inform DER -in "$CERT" -outform PEM -out "$tmp/cert.pem" ||
 		die "cannot read certificate $CERT"
 	if [ "$SB" = 1 ]; then
-		FP=$(openssl x509 -in "$tmp/cert.pem" -noout -fingerprint -sha1 | cut -d= -f2)
-		if mokutil --list-enrolled 2>/dev/null | grep -qiF "SHA1 Fingerprint: $FP"; then
-			echo "signing key $FP is an enrolled MOK"
-			# systemd-boot loads drivers with the firmware's LoadImage,
-			# which checks db; a MOK is only honoured where shim hooks it.
-			[ "$LOADER" = systemd-boot ] &&
+		FP=$(tscsync_cert_fingerprint "$tmp/cert.pem")
+		if how=$(tscsync_cert_is_trusted "$FP" "$tmp/cert.pem" "$CERT"); then
+			echo "signing key $FP is trusted ($how)"
+			[ "$LOADER" = systemd-boot ] && [[ "$how" == enrolled-MOK ]] &&
 				echo "NOTE: with systemd-boot a MOK-only key may be rejected; if so, systemd-boot skips tscsync and boots normally (see docs/SECURE-BOOT.md)."
-		elif mokutil --db 2>/dev/null | grep -qiF "SHA1 Fingerprint: $FP"; then
-			echo "signing key $FP is in the firmware's db"
 		else
 			die "certificate $CERT ($FP) is neither an enrolled MOK nor in db; see docs/SECURE-BOOT.md"
 		fi
