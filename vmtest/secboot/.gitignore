@@ -1,0 +1,3 @@
+# Local enrolled OVMF_VARS (contain your PK/KEK/db material). Never commit.
+*.fd
+OVMF_CODE.secboot.path
