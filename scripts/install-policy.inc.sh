@@ -1,8 +1,7 @@
 # SPDX-License-Identifier: MIT
 # Shared by scripts/install.sh and scripts/test-install-policy.sh.
 # Expects: EFIVARS, GV, LOADER, GRUB_DIR, ESP (may be empty), die()
-# Optional overrides for tests: TSCSYNC_MOKUTIL, TSCSYNC_ROOT (prefix for key paths),
-# TSCSYNC_TRUST_SBCTL_DB=1
+# Optional overrides for tests: TSCSYNC_MOKUTIL, TSCSYNC_ROOT (prefix for key paths)
 
 # Prefix known absolute key paths when testing under a fake root.
 _tscsync_keypath() {
@@ -22,8 +21,8 @@ _tscsync_mokutil() {
 	fi
 }
 
-# Evidence first, then popularity fallback: grub → systemd-boot → rEFInd.
-# Sets LOADER. May set ESP when discovering fallback loaders on the ESP.
+# Evidence first (BootCurrent names rEFInd, LoaderInfo names systemd-boot),
+# then grub.cfg, then a rEFInd install on the ESP. Sets LOADER; may set ESP.
 # With TSCSYNC_ROOT set (tests), filesystem probes are rooted there.
 tscsync_detect_loader() {
 	local loader_info cur var d root=${TSCSYNC_ROOT:-}
@@ -65,12 +64,13 @@ tscsync_detect_loader() {
 	elif has_grub_cfg; then
 		LOADER=grub
 	else
-		# Ambiguous: no BootCurrent/LoaderInfo — prefer systemd-boot, then rEFInd on ESP.
-		# (grub.cfg already checked above.)
+		# No evidence and no grub.cfg. systemd-boot is not guessed: it sets
+		# LoaderInfo on every boot, so without it systemd-boot did not start
+		# this boot and its drivers would never load. rEFInd sets nothing, and
+		# its boot entry may not say "refind" (e.g. installed as EFI/BOOT), so
+		# a refind.conf on the ESP is the best remaining sign.
 		find_esp_candidate || true
-		if [ -n "${ESP:-}" ] && [ -d "$ESP/EFI/systemd" ]; then
-			LOADER=systemd-boot
-		elif [ -n "${ESP:-}" ]; then
+		if [ -n "${ESP:-}" ]; then
 			if [ -f "$ESP/EFI/refind/refind.conf" ]; then
 				LOADER=refind
 			else
@@ -79,6 +79,8 @@ tscsync_detect_loader() {
 				done
 			fi
 		fi
+		[ -n "$LOADER" ] &&
+			echo "note: guessed rEFInd from refind.conf on $ESP (no boot loader variable says so); pass --loader to be sure"
 	fi
 	[ -n "$LOADER" ] ||
 		die "cannot tell which boot loader is in use; pass --loader grub, systemd-boot or refind"
@@ -105,26 +107,9 @@ tscsync_cert_is_trusted() {
 		echo "firmware-db"
 		return 0
 	fi
-	# sbctl Database Key: mokutil --db can miss it; accept on-disk sbctl db cert when SB is on.
-	case "$cert" in
-	*/sbctl/keys/db/db.pem | */sbctl/keys/db/db.crt | */secureboot/keys/db/db.pem)
-		if command -v sbctl >/dev/null 2>&1; then
-			if sbctl list-enrolled-keys 2>/dev/null | grep -qiF "$fp"; then
-				echo "sbctl-db"
-				return 0
-			fi
-			# sbctl status + matching local db cert file is enough on Arch hosts.
-			if sbctl status 2>/dev/null | grep -q 'Installed:.*sbctl is installed'; then
-				echo "sbctl-db-file"
-				return 0
-			fi
-		fi
-		if [ "${TSCSYNC_TRUST_SBCTL_DB:-0}" = 1 ]; then
-			echo "sbctl-db-test"
-			return 0
-		fi
-		;;
-	esac
+	# Only a fingerprint match proves the firmware trusts the key. Having
+	# sbctl or its key files installed does not: the keys may never have
+	# been enrolled, or a firmware update may have reset db/MokList.
 	return 1
 }
 

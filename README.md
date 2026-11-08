@@ -162,7 +162,7 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 
 | Command | What it does |
 |---|---|
-| `sudo scripts/install.sh [--measure]` | Detects loader (BootCurrent/LoaderInfo, else grub→systemd-boot→rEFInd), ESP, and an *enrolled* signing key; installs in measure mode; reinstall keeps the current mode unless `--measure` |
+| `sudo scripts/install.sh [--measure]` | Detects the loader (BootCurrent/LoaderInfo, else grub.cfg, else a rEFInd install), the ESP and an *enrolled* signing key; installs in measure mode; reinstall keeps the current mode unless `--measure` |
 | `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--exit-success\|--no-exit-success]` | Switches mode for the next boot; `--exit-success` is for rEFInd and is kept across later changes |
 | `tscsync-status` | Clocksource, kernel TSC messages with a one-line verdict on why the TSC was kept or dropped, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |

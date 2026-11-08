@@ -30,8 +30,10 @@ Known paths:
 | sbctl | `/var/lib/sbctl/keys/db/db.key` | `/var/lib/sbctl/keys/db/db.pem` |
 
 Trust is checked by certificate SHA-1 fingerprint against `mokutil
---list-enrolled`, `mokutil --db`, and (for the sbctl db cert path) the local
-sbctl Database Key when sbctl is installed. To force a key:
+--list-enrolled` (MOKs) and `mokutil --db` (the firmware's db). Key files on
+disk prove nothing by themselves: sbctl keys may never have been enrolled, and
+a firmware update can reset db or the MOK list (it did on a Legion Pro 5
+16ADR10 going to RLCN33WW). To force a key:
 
 ```sh
 sudo scripts/install.sh --key /path/to/key.pem --cert /path/to/cert.der

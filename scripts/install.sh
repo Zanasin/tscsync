@@ -95,8 +95,8 @@ EFIVARS=${TSCSYNC_EFIVARS:-/sys/firmware/efi/efivars}	# override only for tests
 GV=8be4df61-93ca-11d2-aa0d-00e098032b8c	# EFI global variable GUID
 # shellcheck source=install-policy.inc.sh
 . "$SCRIPT_DIR/install-policy.inc.sh"
-# Evidence (BootCurrent / LoaderInfo) first; ambiguous fallback: grub →
-# systemd-boot → rEFInd (see install-policy.inc.sh).
+# Evidence (BootCurrent / LoaderInfo) first, then grub.cfg, then a rEFInd
+# install on the ESP (see install-policy.inc.sh).
 tscsync_detect_loader
 case "$LOADER" in
 grub | systemd-boot | refind) ;;

@@ -95,15 +95,14 @@ case_fallback_grub() {
 }
 run "detect: fallback grub.cfg" case_fallback_grub
 
-# --- detect: ambiguous → systemd-boot on ESP ---
-case_fallback_sd() {
+# --- detect: EFI/systemd without LoaderInfo is not a guess (systemd-boot didn't run) ---
+case_no_guess_sd() {
 	local root=$T/r4
 	mkdir -p "$root/boot/efi/EFI/systemd" "$root/efivars"
 	EFIVARS=$root/efivars TSCSYNC_ROOT=$root LOADER= GRUB_DIR= ESP=
-	tscsync_detect_loader
-	[ "$LOADER" = systemd-boot ]
+	! (tscsync_detect_loader) >/dev/null 2>&1
 }
-run "detect: fallback EFI/systemd" case_fallback_sd
+run "detect: EFI/systemd alone refuses (asks for --loader)" case_no_guess_sd
 
 # --- detect: ambiguous → rEFInd on ESP ---
 case_fallback_refind() {
@@ -139,12 +138,32 @@ case "\$1" in
 esac
 EOF
 	chmod +x "$T/mokutil"
-	TSCSYNC_ROOT=$root TSCSYNC_MOKUTIL=$T/mokutil TSCSYNC_TRUST_SBCTL_DB=1 \
+	TSCSYNC_ROOT=$root TSCSYNC_MOKUTIL=$T/mokutil \
 		LOADER=refind SB=1 KEY= CERT= NOSIGN=0
 	tscsync_pick_signing_key >/dev/null
 	[[ "$CERT" == *sbctl/keys/db/db.pem ]]
 }
 run "sign: refind prefers enrolled sbctl over leftover DKMS" case_sign_refind_sbctl
+
+# --- signing: SB on, sbctl installed but its db key not enrolled → no key ---
+case_sign_sbctl_not_enrolled() {
+	local root=$T/s5
+	mkdir -p "$root/var/lib/sbctl/keys/db" "$T/sbctl-bin"
+	make_cert_pair "$root/var/lib/sbctl/keys/db" "sbctl-db-unenrolled"
+	mv "$root/var/lib/sbctl/keys/db/key.pem" "$root/var/lib/sbctl/keys/db/db.key"
+	mv "$root/var/lib/sbctl/keys/db/cert.pem" "$root/var/lib/sbctl/keys/db/db.pem"
+	cat >"$T/sbctl-bin/sbctl" <<'EOF'
+#!/usr/bin/bash
+echo "Installed:	✓ sbctl is installed"
+EOF
+	chmod +x "$T/sbctl-bin/sbctl"
+	printf '#!/usr/bin/bash\nexit 0\n' >"$T/mokutil"
+	chmod +x "$T/mokutil"
+	PATH=$T/sbctl-bin:$PATH TSCSYNC_ROOT=$root TSCSYNC_MOKUTIL=$T/mokutil \
+		LOADER=refind SB=1 KEY= CERT= NOSIGN=0
+	! tscsync_pick_signing_key >/dev/null 2>&1
+}
+run "sign: sbctl installed but db key not enrolled is skipped" case_sign_sbctl_not_enrolled
 
 # --- signing: SB on, enrolled MOK only, loader=grub → MOK ---
 case_sign_grub_mok() {
