@@ -5,25 +5,42 @@ by a key the firmware or shim trusts. With GRUB, tscsync is usually signed
 with a Machine Owner Key (MOK), the same kind of key used for out-of-tree
 kernel modules such as NVIDIA's. With systemd-boot or rEFInd, see the sections below.
 
-## If you already have a MOK
+## How the installer picks a key
 
-`scripts/install.sh` looks for keys that distributions already create for
-kernel modules and uses the first one it finds:
+`scripts/install.sh` looks for keys that distributions already create, but it
+only **auto-signs with a key that is actually trusted** (enrolled MOK or in
+the firmware `db` / sbctl Database Key). A leftover DKMS MOK that was never
+enrolled is skipped instead of failing the install (#7).
+
+Candidate order depends on the boot loader:
+
+| Loader | Preference |
+|---|---|
+| GRUB | MOK paths first, then sbctl / `db` |
+| systemd-boot | sbctl / `db` first, then MOK |
+| rEFInd | sbctl / `db` first, then MOK |
+
+Known paths:
 
 | Distribution | Key | Certificate |
 |---|---|---|
 | Fedora (akmods) | `/etc/pki/akmods/private/private_key.priv` | `/etc/pki/akmods/certs/public_key.der` |
 | Ubuntu / Debian (DKMS, newer) | `/var/lib/dkms/mok.key` | `/var/lib/dkms/mok.pub` |
 | Ubuntu / Debian (shim-signed) | `/var/lib/shim-signed/mok/MOK.priv` | `/var/lib/shim-signed/mok/MOK.der` |
+| sbctl | `/var/lib/sbctl/keys/db/db.key` | `/var/lib/sbctl/keys/db/db.pem` |
 
-It also finds `sbctl`'s db key (`/var/lib/sbctl/keys/db/db.key`). It checks
-that the certificate is actually enrolled (by fingerprint, as a MOK via
-`mokutil --list-enrolled`, or in the firmware's db via `mokutil --db`) before
-installing. To use another key:
+Trust is checked by certificate SHA-1 fingerprint against `mokutil
+--list-enrolled` (MOKs) and `mokutil --db` (the firmware's db). Key files on
+disk prove nothing by themselves: sbctl keys may never have been enrolled, and
+a firmware update can reset db or the MOK list (it did on a Legion Pro 5
+16ADR10 going to RLCN33WW). To force a key:
 
 ```sh
 sudo scripts/install.sh --key /path/to/key.pem --cert /path/to/cert.der
 ```
+
+With Secure Boot **off**, a found key is still used when `sbsign` is available;
+if `sbsign` is missing, the install continues unsigned.
 
 ## Creating and enrolling a MOK
 
@@ -48,10 +65,8 @@ at boot on this machine.
 ## sbctl (own platform keys, no shim)
 
 If you manage your own Secure Boot keys with `sbctl`, GRUB checks images
-against the firmware's `db` instead of MOKs. Install unsigned, then sign the
-installed file with sbctl:
-
-The installer finds sbctl's key and signs with it. To sign yourself instead:
+against the firmware's `db` instead of MOKs. The installer finds sbctl's key
+and signs with it when that key is trusted. To sign yourself instead:
 
 ```sh
 sudo scripts/install.sh --no-sign

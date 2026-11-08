@@ -7,8 +7,16 @@
 # --group-add keep-groups (crun only), without which qemu cannot open it.
 # The repository is mounted read-only; SELinux relabeling is disabled so the
 # container cannot change any host file.
+#
+#   vmtest/run.sh                 default unsigned-OVMF suite
+#   vmtest/run.sh --secure-boot   opt-in SB smokes (see vmtest/README-secboot.md)
 set -euo pipefail
 here=$(cd "$(dirname "$0")/.." && pwd)
+
+if [ "${1:-}" = "--secure-boot" ] || [ "${1:-}" = "--secboot" ]; then
+	exec bash "$here/vmtest/run-secboot.sh"
+fi
+
 host=
 [ -e /.flatpak-info ] && host="flatpak-spawn --host"
 podman="$host podman"

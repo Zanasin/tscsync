@@ -1,0 +1,6 @@
+# Local enrolled OVMF_VARS / signing material. Never commit.
+*.fd
+*.path
+sign.key
+sign.pem
+OVMF_CODE.secboot.path
