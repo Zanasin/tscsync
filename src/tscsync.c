@@ -99,7 +99,7 @@
 #define BSP_SPINS		200000000ULL
 #define EDGE_SPINS		1000000ULL
 #define AP_TIMEOUT_US		(60 * 1000 * 1000)
-#define TSCSYNC_VERSION		u"2.2.2"
+#define TSCSYNC_VERSION		u"2.2.3"
 
 #ifdef TSCSYNC_TEST
 /* Test build for VMs only: a warp of the size seen on a Legion Pro 5 16ADR10. */
