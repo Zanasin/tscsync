@@ -32,6 +32,10 @@
  *   exit=success  as a driver, return EFI_SUCCESS instead of EFI_ABORTED
  *                 (for rEFInd, which treats ABORTED as a yellow error; keep
  *                 the default ABORTED under systemd-boot so it unloads quietly)
+ *   layout=wide   pack compact per-AP cells across the console width
+ *   pause=key     wait for a key before returning to the boot loader
+ *   pause=N[s]    wait up to N seconds (optional trailing s); any key continues
+ *   color=off     disable console colors (colors are on by default)
  *
  * Safety properties:
  *   - Never touches flash, NVRAM, or non-volatile EFI variables. The result
@@ -161,6 +165,12 @@ static INT64 bsp_shift;			/* total cycles added to the BSP TSC */
 static UINT64 tsc_hz = 2495000000ULL;	/* calibrated in efi_main */
 static CHAR16 report[16384];
 static UINTN report_len;
+/* Display options (from load options / ESP options file). */
+static BOOLEAN color_on = TRUE;
+static BOOLEAN layout_wide = FALSE;
+static INTN pause_secs = -1;	/* -1: none, 0: wait for key, >0: timed seconds */
+static UINTN console_cols = 160;
+static UINTN wide_col;		/* columns used on the current wide row */
 
 #define barrier() __asm__ volatile("" ::: "memory")
 
@@ -201,18 +211,97 @@ static inline void cpuid(UINT32 leaf, UINT32 sub, UINT32 *a, UINT32 *b, UINT32 *
 	__asm__ volatile("cpuid" : "=a"(*a), "=b"(*b), "=c"(*c), "=d"(*d) : "a"(leaf), "c"(sub));
 }
 
+static void report_put(const CHAR16 *s)
+{
+	for (UINTN i = 0; s[i] && report_len + 1 < sizeof(report) / sizeof(report[0]); i++)
+		report[report_len++] = s[i];
+	report[report_len] = 0;
+}
+
+static void set_fg(UINTN fg)
+{
+	if (!color_on || !ST || !ST->ConOut)
+		return;
+	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut,
+			  EFI_TEXT_ATTR(fg, EFI_BACKGROUND_BLACK));
+}
+
+static void reset_fg(void)
+{
+	if (!color_on || !ST || !ST->ConOut)
+		return;
+	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut,
+			  EFI_TEXT_ATTR(EFI_LIGHTGRAY, EFI_BACKGROUND_BLACK));
+}
+
+static void wide_flush(void)
+{
+	if (!wide_col)
+		return;
+	Print(u"\n");
+	report_put(u"\n");
+	wide_col = 0;
+}
+
+/* Plain text to console and to the volatile result report. */
 static void out(const CHAR16 *fmt, ...)
 {
 	CHAR16 line[256];
 	va_list args;
 
+	wide_flush();	/* full-width lines must not continue a packed row */
 	va_start(args, fmt);
 	UnicodeVSPrint(line, sizeof(line), fmt, args);
 	va_end(args);
 	Print(u"%s", line);
-	for (UINTN i = 0; line[i] && report_len + 1 < sizeof(report) / sizeof(report[0]); i++)
-		report[report_len++] = line[i];
-	report[report_len] = 0;
+	report_put(line);
+}
+
+/* Colored console span; report stays plain. */
+static void out_fg(UINTN fg, const CHAR16 *fmt, ...)
+{
+	CHAR16 line[256];
+	va_list args;
+
+	wide_flush();
+	va_start(args, fmt);
+	UnicodeVSPrint(line, sizeof(line), fmt, args);
+	va_end(args);
+	set_fg(fg);
+	Print(u"%s", line);
+	reset_fg();
+	report_put(line);
+}
+
+static void init_console_cols(void)
+{
+	UINTN cols = 0, rows = 0;
+
+	console_cols = 160;
+	if (!ST || !ST->ConOut || !ST->ConOut->Mode)
+		return;
+	if (!EFI_ERROR(uefi_call_wrapper(ST->ConOut->QueryMode, 4, ST->ConOut,
+					 (UINTN)ST->ConOut->Mode->Mode, &cols, &rows)) &&
+	    cols >= 40)
+		console_cols = cols;
+}
+
+static UINTN status_fg(BOOLEAN ok, BOOLEAN uncertain)
+{
+	if (ok)
+		return EFI_LIGHTGREEN;
+	if (uncertain)
+		return EFI_YELLOW;
+	return EFI_LIGHTRED;
+}
+
+static const CHAR16 *status_word(BOOLEAN ok, BOOLEAN uncertain)
+{
+	if (ok)
+		return u"OK";
+	if (uncertain)
+		return u"UNSURE";
+	return u"BAD";
 }
 
 static INT64 abs64(INT64 v)
@@ -542,22 +631,78 @@ static UINT64 ms_since(UINT64 t0, INT64 shift0)
 	return d > 0 ? (UINT64)d / (tsc_hz / 1000) : 0;
 }
 
+static void print_status_suffix(BOOLEAN ok, BOOLEAN uncertain, const CHAR16 *note, BOOLEAN nl)
+{
+	const CHAR16 *word = status_word(ok, uncertain);
+
+	set_fg(status_fg(ok, uncertain));
+	Print(u"%s", word);
+	reset_fg();
+	report_put(word);
+	if (note && note[0]) {
+		Print(u" %s", note);
+		report_put(u" ");
+		report_put(note);
+	}
+	if (nl) {
+		Print(u"\n");
+		report_put(u"\n");
+	}
+}
+
 static void print_line(UINTN idx, UINT64 apic_id, const CHAR16 *what, INT64 off0,
 		       const struct result *r, UINTN iters, BOOLEAN ok, const CHAR16 *note)
 {
 	CHAR16 warp[64] = u"";
+	CHAR16 head[192];
+	BOOLEAN uncertain = r->uncertain;
+	const CHAR16 *st = status_word(ok, uncertain);
 
 	if (r->warp_tested)
 		UnicodeSPrint(warp, sizeof(warp), u"  warps bsp/ap %lu/%lu",
 			      r->warps_bsp, r->warps_ap);
+
+	if (layout_wide) {
+		CHAR16 cell[64];
+		UINTN cell_len;
+
+		/* Compact cell; status colored; notes on a following full-width line. */
+		UnicodeSPrint(cell, sizeof(cell), u" %02lu:%ld ", (UINT64)idx, r->off);
+		cell_len = StrLen(cell) + StrLen(st) + 1;	/* +1 trailing space */
+		if (wide_col && wide_col + cell_len > console_cols)
+			wide_flush();
+		Print(u"%s", cell);
+		report_put(cell);
+		set_fg(status_fg(ok, uncertain));
+		Print(u"%s", st);
+		reset_fg();
+		report_put(st);
+		Print(u" ");
+		report_put(u" ");
+		wide_col += cell_len;
+		if (note && note[0]) {
+			wide_flush();
+			out(u"    note cpu %lu: %s\n", (UINT64)idx, note);
+		}
+		(void)what;
+		(void)apic_id;
+		(void)off0;
+		(void)iters;
+		(void)warp;
+		return;
+	}
+
 	if (iters)
-		out(u"  %s %2lu apic %3lu: before %ld  after %ld  rtt %lu  iter %lu%s  %s%s\n",
-		    what, (UINT64)idx, apic_id, off0, r->off, r->rtt, (UINT64)iters, warp,
-		    ok ? u"OK " : r->uncertain ? u"UNSURE " : u"BAD ", note);
+		UnicodeSPrint(head, sizeof(head),
+			      u"  %s %2lu apic %3lu: before %ld  after %ld  rtt %lu  iter %lu%s  ",
+			      what, (UINT64)idx, apic_id, off0, r->off, r->rtt, (UINT64)iters, warp);
 	else
-		out(u"  %s %2lu apic %3lu: offset %ld  rtt %lu%s  %s%s\n",
-		    what, (UINT64)idx, apic_id, r->off, r->rtt, warp,
-		    ok ? u"OK " : r->uncertain ? u"UNSURE " : u"BAD ", note);
+		UnicodeSPrint(head, sizeof(head),
+			      u"  %s %2lu apic %3lu: offset %ld  rtt %lu%s  ",
+			      what, (UINT64)idx, apic_id, r->off, r->rtt, warp);
+	Print(u"%s", head);
+	report_put(head);
+	print_status_suffix(ok, uncertain, note, TRUE);
 }
 
 /*
@@ -769,6 +914,76 @@ static BOOLEAN has_token(const CHAR16 *tok)
 			return TRUE;
 	}
 	return FALSE;
+}
+
+/*
+ * layout=wide, color=off, pause=key, pause=N / pause=Ns.
+ * Duration wins over pause=key when both are present.
+ */
+static void parse_display_opts(void)
+{
+	const CHAR16 *s = opts;
+	UINTN n = opts_len;
+	BOOLEAN have_key = has_token(u"pause=key");
+
+	layout_wide = has_token(u"layout=wide");
+	color_on = !has_token(u"color=off");
+	pause_secs = -1;
+	for (UINTN i = 0; s && i + 6 <= n; i++) {
+		UINTN j, val;
+		BOOLEAN start = i == 0 || s[i - 1] == u' ';
+
+		if (!start || CompareMem(&s[i], u"pause=", 6 * sizeof(CHAR16)) != 0)
+			continue;
+		j = i + 6;
+		if (j >= n || s[j] < u'0' || s[j] > u'9')
+			continue;
+		val = 0;
+		while (j < n && s[j] >= u'0' && s[j] <= u'9') {
+			val = val * 10 + (UINTN)(s[j] - u'0');
+			j++;
+		}
+		if (j < n && s[j] == u's')
+			j++;
+		if (j != n && s[j] != u' ' && s[j] != 0)
+			continue;
+		pause_secs = (INTN)val;
+	}
+	if (pause_secs < 0 && have_key)
+		pause_secs = 0;
+}
+
+static void pause_before_return(void)
+{
+	EFI_INPUT_KEY key;
+	UINTN idx = 0;
+
+	if (pause_secs < 0 || !ST || !ST->ConIn)
+		return;
+	/* Drain a stuck keystroke so the wait is not skipped. */
+	while (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key)))
+		;
+
+	if (pause_secs == 0) {
+		out_fg(EFI_WHITE, u"Press any key to continue...\n");
+		uefi_call_wrapper(BS->WaitForEvent, 3, 1, &ST->ConIn->WaitForKey, &idx);
+		uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2, ST->ConIn, &key);
+		return;
+	}
+
+	for (INTN left = pause_secs; left > 0; left--) {
+		set_fg(EFI_WHITE);
+		Print(u"Press any key to continue... %ld   \r", left);
+		reset_fg();
+		for (UINTN t = 0; t < 10; t++) {
+			if (!EFI_ERROR(uefi_call_wrapper(ST->ConIn->ReadKeyStroke, 2,
+							 ST->ConIn, &key)))
+				goto done;
+			uefi_call_wrapper(BS->Stall, 1, 100000);	/* 100 ms */
+		}
+	}
+done:
+	Print(u"\n");
 }
 
 static void save_report(void)
@@ -1005,6 +1220,7 @@ static UINTN ap_pass(EFI_MP_SERVICES_PROTOCOL *mp, UINTN nproc, UINTN bsp, BOOLE
 		if (!ok && m && warp_clean(&r))
 			pass_warp_free++;
 	}
+	wide_flush();
 	if (unsure)
 		out(u"  %lu ok, %lu unsure, %lu not ok\n", (UINT64)good, (UINT64)unsure, (UINT64)bad);
 	else
@@ -1059,18 +1275,21 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 		opts = li->LoadOptions;
 		opts_len = li->LoadOptionsSize / sizeof(CHAR16);
 	}
+	parse_display_opts();
+	init_console_cols();
 	sync = has_token(u"mode=sync");
 	BOOLEAN any_cpu = has_token(u"allow=any-cpu");
 #ifdef TSCSYNC_TEST
 	test_ap_behind = has_token(u"test=ap-behind");
 	test_mixed = has_token(u"test=mixed");
 	test_bsp_loop = sync && !test_ap_behind && !test_mixed;
-	out(u"*** TEST BUILD: %s; for VMs only ***\n", test_ap_behind ?
-	    u"sets every AP back before syncing" : test_mixed ?
-	    u"sets odd APs ahead and even APs back before syncing" :
-	    u"pushes one AP ahead and forces the BSP correction");
+	out_fg(EFI_LIGHTBLUE, u"*** TEST BUILD: %s; for VMs only ***\n", test_ap_behind ?
+	       u"sets every AP back before syncing" : test_mixed ?
+	       u"sets odd APs ahead and even APs back before syncing" :
+	       u"pushes one AP ahead and forces the BSP correction");
 #endif
-	out(u"tscsync %s: mode=%s\n", TSCSYNC_VERSION, sync ? u"sync" : u"measure");
+	out_fg(EFI_WHITE, u"tscsync %s: mode=%s\n", TSCSYNC_VERSION,
+	       sync ? u"sync" : u"measure");
 
 	cpuid(0, 0, &a, &b, &c, &d);
 	UINT32 max_leaf = a;
@@ -1108,13 +1327,16 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	out(u"cpu: vendor=%s family=0x%x invariant_tsc=%d tsc_adjust=%d tsc_tick=%lu\n",
 	    amd ? u"amd" : hygon ? u"hygon" : u"other", family, invariant, tsc_adjust, tick);
 	if (sync && tsc_adjust) {
-		out(u"sync refused: this CPU has TSC_ADJUST, so the kernel corrects offsets itself; measuring only\n");
+		out_fg(EFI_LIGHTBLUE,
+		       u"sync refused: this CPU has TSC_ADJUST, so the kernel corrects offsets itself; measuring only\n");
 		sync = FALSE;
 	} else if (sync && !invariant) {
-		out(u"sync refused: no invariant TSC, so Linux will not use the TSC anyway; measuring only\n");
+		out_fg(EFI_LIGHTBLUE,
+		       u"sync refused: no invariant TSC, so Linux will not use the TSC anyway; measuring only\n");
 		sync = FALSE;
 	} else if (sync && !known && !any_cpu) {
-		out(u"sync refused: CPU not in the supported list (add allow=any-cpu to override); measuring only\n");
+		out_fg(EFI_LIGHTBLUE,
+		       u"sync refused: CPU not in the supported list (add allow=any-cpu to override); measuring only\n");
 		sync = FALSE;
 	}
 
@@ -1139,7 +1361,8 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 	 * In measure mode the survey is the only pass, so it judges each AP the
 	 * way the kernel will: verify limit plus the warp test.
 	 */
-	out(u"survey (read-only%s):\n", sync ? u"" : u", with kernel-style warp test");
+	out_fg(EFI_LIGHTCYAN, u"survey (read-only%s):\n",
+	       sync ? u"" : u", with kernel-style warp test");
 	bad = ap_pass(mp, nproc, bsp, FALSE, !sync, offs, measured, &n_measured, &unsure);
 	out(u"  (%lu ms)\n", ms_since(t_phase, s_phase));
 
@@ -1221,13 +1444,13 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *systab)
 #ifdef TSCSYNC_TEST
 ap_fix:
 #endif
-	out(u"AP pass (corrects any AP still off):\n");
+	out_fg(EFI_LIGHTCYAN, u"AP pass (corrects any AP still off):\n");
 	t_phase = rdtsc();
 	s_phase = bsp_shift;
 	ap_pass(mp, nproc, bsp, TRUE, FALSE, NULL, NULL, NULL, NULL);
 	out(u"  (%lu ms)\n", ms_since(t_phase, s_phase));
 verify:
-	out(u"verify (read-only, with kernel-style warp test):\n");
+	out_fg(EFI_LIGHTCYAN, u"verify (read-only, with kernel-style warp test):\n");
 	t_phase = rdtsc();
 	s_phase = bsp_shift;
 	bad = ap_pass(mp, nproc, bsp, FALSE, TRUE, NULL, NULL, NULL, &unsure);
@@ -1238,19 +1461,24 @@ result:
 			out(u"cpu %lu still busy at exit; its event is left open\n", (UINT64)i);
 	out(u"total %lu ms\n", ms_since(t_all, s_all));
 	if (bad == 0)
-		out(u"RESULT: all APs in sync (Linux should keep the TSC)\n");
+		out_fg(EFI_LIGHTGREEN,
+		       u"RESULT: all APs in sync (Linux should keep the TSC)\n");
 	else if (bad == unsure)
-		out(u"RESULT: no warps, but %lu offsets are within measurement error of the limit "
-		    u"(the kernel's check decides; see tscsync-status)\n", (UINT64)unsure);
+		out_fg(EFI_YELLOW,
+		       u"RESULT: no warps, but %lu offsets are within measurement error of the limit "
+		       u"(the kernel's check decides; see tscsync-status)\n", (UINT64)unsure);
 	else if (pass_warp_free == bad)
-		out(u"RESULT: no warps, but %lu APs are past the verify limit; the kernel's check "
-		    u"decides (some machines keep the TSC at these offsets; see tscsync-status)\n",
-		    (UINT64)bad);
+		out_fg(EFI_YELLOW,
+		       u"RESULT: no warps, but %lu APs are past the verify limit; the kernel's check "
+		       u"decides (some machines keep the TSC at these offsets; see tscsync-status)\n",
+		       (UINT64)bad);
 	else
-		out(u"RESULT: some APs out of sync (Linux will fall back to HPET)\n");
+		out_fg(EFI_LIGHTRED,
+		       u"RESULT: some APs out of sync (Linux will fall back to HPET)\n");
 done:
 	save_report();
 	if (driver)
 		driver_mark_returned(li);
+	pause_before_return();
 	return done_status;	/* always hand control back to the boot loader */
 }
