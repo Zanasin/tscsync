@@ -789,13 +789,22 @@ static void save_report(void)
  *   options   one line of options, e.g. "mode=sync" or
  *             "mode=sync exit=success" (written by set-mode.sh)
  *   disabled  present: do nothing (set-mode.sh off, or the hang guard)
- *   pending   hang guard: created here before any work, deleted by
- *             tscsync-report.service once Linux is up. Found at the next
- *             boot, it means that boot never reached Linux: create disabled.
+ *   pending   hang guard, stage 1: created here before any work. Found at
+ *             the next boot, it means the tool never returned to the boot
+ *             loader: create disabled.
+ *   returned1, returned2, returned3
+ *             hang guard, stage 2: when the tool returns, pending is
+ *             swapped for the next of these. Linux not confirming the boot
+ *             means another OS was chosen from the menu, or Linux failed;
+ *             finding returned3 (3 such boots in a row) creates disabled.
+ * tscsync-report.service deletes pending and returned* once Linux is up.
  */
 static CHAR16 p_options[] = u"\\EFI\\tscsync\\options";
 static CHAR16 p_disabled[] = u"\\EFI\\tscsync\\disabled";
 static CHAR16 p_pending[] = u"\\EFI\\tscsync\\pending";
+static CHAR16 p_returned1[] = u"\\EFI\\tscsync\\returned1";
+static CHAR16 p_returned2[] = u"\\EFI\\tscsync\\returned2";
+static CHAR16 p_returned3[] = u"\\EFI\\tscsync\\returned3";
 static CHAR16 opt_buf[256];
 
 static BOOLEAN file_open(EFI_FILE_HANDLE root, CHAR16 *path, UINT64 mode, EFI_FILE_HANDLE *f)
@@ -881,6 +890,31 @@ static BOOLEAN already_ran_this_boot(void)
 	return st == EFI_BUFFER_TOO_SMALL;
 }
 
+/*
+ * Driver only, after a run: the tool returned, so move the hang guard from
+ * pending to the next returned* stage. The new stage is written before the
+ * old files go: if the ESP write is cut short, a leftover pending only
+ * means a disable at the next boot, the safe side.
+ */
+static void driver_mark_returned(EFI_LOADED_IMAGE *li)
+{
+	EFI_FILE_HANDLE root = LibOpenRoot(li->DeviceHandle);
+
+	if (!root)
+		return;
+	if (file_exists(root, p_returned2)) {
+		file_create(root, p_returned3);
+		file_delete(root, p_returned2);
+	} else if (file_exists(root, p_returned1)) {
+		file_create(root, p_returned2);
+		file_delete(root, p_returned1);
+	} else {
+		file_create(root, p_returned1);
+	}
+	file_delete(root, p_pending);
+	uefi_call_wrapper(root->Close, 1, root);
+}
+
 /* Driver only: read the options file without touching the hang guard. */
 static void driver_read_options(EFI_LOADED_IMAGE *li)
 {
@@ -904,9 +938,16 @@ static BOOLEAN sdboot_setup(EFI_LOADED_IMAGE *li)
 	if (file_exists(root, p_disabled))
 		goto out;
 	if (file_exists(root, p_pending)) {
-		out(u"tscsync: previous boot did not reach Linux; disabling tscsync\n");
+		out(u"tscsync: tscsync.efi did not return on the previous boot; disabling tscsync\n");
 		file_create(root, p_disabled);
 		file_delete(root, p_pending);
+		save_report();
+		goto out;
+	}
+	if (file_exists(root, p_returned3)) {
+		out(u"tscsync: 3 boots in a row did not reach Linux; disabling tscsync\n");
+		file_create(root, p_disabled);
+		file_delete(root, p_returned3);
 		save_report();
 		goto out;
 	}
@@ -1209,5 +1250,7 @@ result:
 		out(u"RESULT: some APs out of sync (Linux will fall back to HPET)\n");
 done:
 	save_report();
+	if (driver)
+		driver_mark_returned(li);
 	return done_status;	/* always hand control back to the boot loader */
 }

@@ -8,10 +8,16 @@
 #   tscsync_mode=mode=measure|mode=sync  measure is read-only (default)
 #   tscsync_pending                      hang guard, see below
 #
-# Hang guard: tscsync_pending is set to 1 before tscsync.efi runs and is
-# cleared by tscsync-report.service once Linux has booted. If a boot never
-# reaches Linux, the next boot finds tscsync_pending=1, skips tscsync.efi
-# and turns it off, so the machine always recovers after one power cycle.
+# Hang guard, in two stages (since 2.2.3), so that choosing another OS from
+# the GRUB menu doesn't turn tscsync off:
+#   0    the last boot reached Linux (tscsync-report.service clears it).
+#   1    set just before tscsync.efi runs. Still 1 at the next boot means the
+#        tool never returned to GRUB: skip it and turn it off.
+#   2-4  the tool returned to GRUB, but Linux has not confirmed yet: another
+#        OS was chosen from the menu, or Linux failed to come up. The value
+#        counts such boots in a row; after 3 the next boot turns tscsync off.
+# A hang in the tool recovers after one power cycle; a Linux boot that keeps
+# failing after the tool ran recovers after three.
 function tscsync_save {
   # Write to the same grubenv that Fedora's 00_header loads.
   if [ -n "${config_directory}" ]; then
@@ -21,13 +27,27 @@ function tscsync_save {
   fi
 }
 
+function tscsync_disable {
+  set tscsync_enable=0
+  set tscsync_pending=0
+  tscsync_save tscsync_enable tscsync_pending
+}
+
 if [ "${tscsync_enable}" = "1" ]; then
   if [ "${tscsync_pending}" = "1" ]; then
-    echo "tscsync: previous boot did not reach Linux; disabling tscsync"
-    set tscsync_enable=0
-    set tscsync_pending=0
-    tscsync_save tscsync_enable tscsync_pending
+    echo "tscsync: tscsync.efi did not return on the previous boot; disabling tscsync"
+    tscsync_disable
+  elif [ "${tscsync_pending}" = "4" ]; then
+    echo "tscsync: 3 boots in a row did not reach Linux; disabling tscsync"
+    tscsync_disable
   else
+    if [ "${tscsync_pending}" = "2" ]; then
+      set tscsync_next=3
+    elif [ "${tscsync_pending}" = "3" ]; then
+      set tscsync_next=4
+    else
+      set tscsync_next=2
+    fi
     set tscsync_pending=1
     tscsync_save tscsync_pending
     insmod part_gpt
@@ -37,5 +57,9 @@ if [ "${tscsync_enable}" = "1" ]; then
       chainloader (${tscsync_esp})/EFI/tscsync/tscsync.efi ${tscsync_mode}
       boot
     fi
+    # Back in GRUB: the tool returned (or could not be loaded).
+    set tscsync_pending="${tscsync_next}"
+    tscsync_save tscsync_pending
+    unset tscsync_next
   fi
 fi

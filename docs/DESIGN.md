@@ -133,10 +133,15 @@ measures it with the BSP's TSC, which tscsync moves forward.
   there, so `grub.cfg` is never regenerated or edited.
 - The hook chainloads `EFI/tscsync/tscsync.efi` with the mode as load options.
   When it returns, GRUB continues normally.
-- Hang guard: the hook sets `tscsync_pending=1` in grubenv before running
-  the tool; `tscsync-report.service` clears it once Linux is up. A boot that
-  never reaches Linux leaves it set, so the next boot skips the tool and sets
-  `tscsync_enable=0`. The service is wanted by both `multi-user.target` and
+- Hang guard, in two stages: the hook sets `tscsync_pending=1` in grubenv
+  before running the tool. Still 1 at the next boot means the tool never
+  returned: skip it and set `tscsync_enable=0`. When the tool returns, GRUB
+  sets 2, or 3 or 4 if it was already counting; `tscsync-report.service`
+  clears any non-zero value once Linux is up. Finding 4 means 3 boots in a
+  row ran the tool but never reached Linux (Linux failing, or another OS
+  chosen from the menu every time), and also disables it. Until 2.2.3 there
+  was one stage, so choosing another OS from the menu once disabled tscsync.
+  The service is wanted by both `multi-user.target` and
   `system-update.target`: offline-update boots (PackageKit, dnf offline)
   never reach `multi-user.target`, and without this, one such boot was
   enough to disable tscsync. `install.sh` sets `RequiresMountsFor=` on the
@@ -155,11 +160,14 @@ measures it with the BSP's TSC, which tscsync moves forward.
   error after a successful run, so `exit=success` in the options returns
   `EFI_SUCCESS` instead; the installer sets it for rEFInd. The image then
   stays loaded until `ExitBootServices`, which is harmless. State
-  is three small files in `\EFI\tscsync` on the same ESP: `options`,
-  `disabled` (`set-mode.sh off`, or the hang guard) and `pending` (the hang
-  guard: created before any work, deleted by `tscsync-report.service`; found
-  at the next boot, it creates `disabled`). If `pending` cannot be written,
-  the driver does nothing.
+  is small files in `\EFI\tscsync` on the same ESP: `options`, `disabled`
+  (`set-mode.sh off`, or the hang guard) and the hang guard in two stages,
+  like GRUB's: `pending` is created before any work (found at the next boot,
+  it creates `disabled`), and when the tool returns it is swapped for
+  `returned1`, then `returned2` and `returned3` on later boots that don't
+  reach Linux; finding `returned3` creates `disabled`.
+  `tscsync-report.service` deletes all of them once Linux is up. If `pending`
+  cannot be written, the driver does nothing.
 - Two copies in one boot: rEFInd chaining to systemd-boot, for example, would
   start the driver twice, and the second copy would find the first one's
   `pending` file and switch tscsync off. So before anything else, every copy
@@ -181,7 +189,9 @@ not open to everyone, rootless podman is passed `--group-add keep-groups`
 - release build in measure mode, and in sync mode where sync must be refused;
 - test build (`make test`) that first creates a warp, in three patterns:
   BSP behind all APs, APs behind the BSP, and mixed;
-- the hang guard, for both boot loaders, and the systemd-boot state files;
+- the hang guard, for both boot loaders: a tool that never returned, and
+  another OS chosen from the menu on four boots in a row (three runs, then a
+  disable); and the systemd-boot state files;
 - the driver's exit status as rEFInd sees it (the UEFI shell's `load` reports
   it the same way), with and without `exit=success`;
 - two copies in one boot (shell-loaded copy, then systemd-boot's): only the
@@ -208,4 +218,4 @@ behaviour in KVM is also only faithful when the host's own TSC is stable.
 | 2.2 | rEFInd support (installer detects it from `BootCurrent`, driver in rEFInd's `drivers_x64`, `exit=success` so rEFInd shows no error); a second copy in the same boot returns at once instead of tripping the hang guard; `tscsync-status` says whether the warp check or the clocksource watchdog dropped the TSC; warp-free misses no longer promise an HPET fallback |
 | 2.2.1 | Reinstalling keeps the current mode (`--measure` to reset); the hang-guard service waits for the mount that holds the guard, e.g. a separate `/boot/efi` (#5); vmtest keeps the `kvm` group only where `/dev/kvm` needs it |
 | 2.2.2 | With Secure Boot off, a signing key found on the system no longer makes `sbsign` mandatory (installs unsigned if it is missing, #7); README notes on sleep (tscsync can't run on S3 resume, #8) and the AUR package |
-| (unreleased) | Installer: evidence-based loader detect (then grub.cfg, then a rEFInd install; systemd-boot only from LoaderInfo); auto-sign only with an enrolled/trusted key (skip leftover DKMS); rEFInd/systemd-boot prefer sbctl db; `make check` policy tests; opt-in `make vmtest-secboot` (q35+SMM OVMF smokes) |
+| 2.2.3 | Two-stage hang guard for GRUB and the driver: choosing another OS from the boot menu no longer turns tscsync off, only a tool that never returned or 3 boots in a row without Linux do. Installer (#9): evidence-based loader detect (then grub.cfg, then a rEFInd install; systemd-boot only from LoaderInfo); auto-sign only with an enrolled key (skip leftover DKMS); rEFInd/systemd-boot prefer sbctl db; `make check` policy tests; opt-in `make vmtest-secboot` (q35+SMM OVMF smokes). README: S3 results from three more machines |

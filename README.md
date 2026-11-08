@@ -86,9 +86,11 @@ The whole run takes about 0.6 s. Details and measurements:
   you've seen the numbers.
 - Large corrections only move counters forward. Backward steps are capped at
   1 million cycles (about 0.4 ms) and only used for fine-tuning.
-- If a boot never reaches Linux, the next boot skips tscsync and turns it off
-  (the hang guard). Booting another OS from the boot menu counts too; run
-  `sudo scripts/set-mode.sh sync` to turn it back on.
+- If tscsync ever hangs, the next boot skips it and turns it off (the hang
+  guard). If it ran fine but 3 boots in a row never reach Linux, it is turned
+  off as well. Choosing another OS from the boot menu now and then doesn't
+  count against it (since 2.2.3). Run `sudo scripts/set-mode.sh sync` to turn
+  it back on.
 - Secure Boot stays on. The binary is signed with a Machine Owner Key (MOK)
   you already have or create once, or a key in the firmware's db such as
   sbctl's (the reliable choice with systemd-boot).
@@ -200,13 +202,16 @@ reinstall starts in measure mode.
 tscsync runs only at boot, before Linux. On resume from deep sleep (S3) the
 firmware resets the TSCs and jumps straight back into Linux, so tscsync does
 not run, and whether the cores agree afterwards depends on the firmware. On a
-Legion Pro 5 16ADR10 they do (31 of 31 resumes kept the TSC). On a Legion 5
-gen 6 (Ryzen 5 5600H) Linux drops the TSC after resume. Once Linux has
-marked the TSC unstable it doesn't use it again until the next boot, so
-nothing run after resume can bring it back. Suspend-to-idle
-(`s2idle`) keeps the TSCs running where it works. Avoid `tsc=reliable` as a
-workaround: it also skips the check at boot, so a failed sync would go
-unnoticed.
+Legion Pro 5 16ADR10 they do: 47 of 47 resumes kept the TSC on BIOS RLCN32WW,
+and another 16ADR10 on RLCN33WW stays within ±24 cycles. On a Legion 7
+16ACHg6 they don't: after every S3 resume CPU 0 is about 158 ms behind the
+other cores, the same pattern as at boot but smaller, and Linux drops the TSC
+(a Legion 5 gen 6 behaves the same way). Once Linux has marked the TSC
+unstable it doesn't use it again until the next boot, so nothing run after
+resume can bring it back. Suspend-to-idle (`s2idle`) keeps the TSCs running
+and kept the TSC on 10 of 10 resumes on that Legion 7, where it works. Avoid
+`tsc=reliable` as a workaround: it also skips the check at boot, so a failed
+sync would go unnoticed.
 
 ## If Linux still drops the TSC
 

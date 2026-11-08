@@ -46,7 +46,7 @@ fi
 
 if [ "${LOADER:-grub}" != grub ]; then
 	# The driver reads these files on the ESP (see src/tscsync.c, sdboot_setup).
-	rm -f "$STATE_DIR/pending"
+	rm -f "$STATE_DIR/pending" "$STATE_DIR"/returned[123]
 	if [ "$mode" = off ]; then
 		: >"$STATE_DIR/disabled"
 	else

@@ -35,7 +35,11 @@ if [ -r /etc/tscsync.conf ]; then
 			echo "  loader: $LOADER"
 			echo "  options: $(cat "$STATE_DIR/options")"
 			[ -e "$STATE_DIR/disabled" ] && echo "  disabled (set-mode off, or the hang guard)"
-			[ -e "$STATE_DIR/pending" ] && echo "  hang guard pending"
+			[ -e "$STATE_DIR/pending" ] && echo "  hang guard: tool running or never returned"
+			for n in 1 2 3; do
+				[ -e "$STATE_DIR/returned$n" ] &&
+					echo "  hang guard: $n boot(s) in a row without Linux (another OS chosen, or Linux failed)"
+			done
 		else
 			echo "  (run with sudo to read $STATE_DIR)"
 		fi

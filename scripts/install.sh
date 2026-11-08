@@ -277,7 +277,7 @@ else
 	# rEFInd shows EFI_ABORTED (systemd-boot's quiet unload) as an error, so it
 	# gets exit=success.
 	install -d "$STATE_DIR" "$(dirname "$DRIVER")"
-	rm -f "$STATE_DIR/pending" "$STATE_DIR/disabled"
+	rm -f "$STATE_DIR/pending" "$STATE_DIR"/returned[123] "$STATE_DIR/disabled"
 	# A reinstall also keeps exit=success if it was set by hand.
 	EXIT_TOK=$OLD_EXIT
 	[ "$LOADER" = refind ] && EXIT_TOK=" exit=success"

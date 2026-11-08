@@ -103,11 +103,26 @@ echo "### 3c. test build: odd APs ahead of the BSP, even APs behind (mixed patte
 set_env tscsync_enable=1 "tscsync_mode=mode=sync test=mixed" tscsync_pending=0
 boot_vm "TEST mixed, sync" kvm-pinned
 
-echo "### 4. hang guard: previous boot left pending=1 (Linux never cleared it)"
+echo "### 4. hang guard: previous boot left pending=1 (tscsync.efi never returned)"
+make_disk "$W/build/tscsync.efi"
+set_env tscsync_enable=1 tscsync_mode=mode=measure tscsync_pending=1
 boot_vm "guard: expect skip + disable"
 
 echo "### 5. after the guard disabled it: expect tscsync not to run"
 boot_vm "guard: disabled"
+
+# Once the tool returns, GRUB moves pending to 2, 3, 4. Nothing in the VM
+# clears it (no Linux), which is what choosing another OS from the GRUB menu
+# looks like. Expect three normal runs, then a disable.
+echo "### 5b. guard: other OS chosen from the menu, boot 1 (pending 0 -> 2)"
+set_env tscsync_enable=1 tscsync_mode=mode=measure tscsync_pending=0
+boot_vm "guard: other OS 1, expect run, after pending=2"
+echo "### 5c. other OS again, boot 2 (pending 2 -> 3)"
+boot_vm "guard: other OS 2, expect run, after pending=3"
+echo "### 5d. other OS again, boot 3 (pending 3 -> 4)"
+boot_vm "guard: other OS 3, expect run, after pending=4"
+echo "### 5e. boot 4: three boots in a row never reached Linux"
+boot_vm "guard: expect skip + disable (3 in a row)"
 
 # --- systemd-boot: the driver build, loaded from EFI/systemd/drivers ---------
 make_sdboot_disk() {	# $1 = driver binary, $2 = options line
@@ -136,7 +151,15 @@ state() {	# which tscsync state files exist on the ESP
 }
 
 linux_booted() {	# what tscsync-report.service does once Linux is up
-	mdel -i "$T/esp.img" ::/EFI/tscsync/pending 2>/dev/null || true
+	local f
+	for f in pending returned1 returned2 returned3; do
+		mdel -i "$T/esp.img" ::/EFI/tscsync/$f 2>/dev/null || true
+	done
+}
+
+put_state() {	# $1 = state file to create on the ESP, as a hung boot leaves it
+	printf '1\n' >"$T/statefile"
+	mcopy -o -i "$T/esp.img" "$T/statefile" ::/EFI/tscsync/"$1"
 }
 
 echo
@@ -151,12 +174,26 @@ make_sdboot_disk "$W/build/tscsync-test-driver.efi" "mode=sync"
 boot_vm "systemd-boot: TEST BSP-behind, sync" kvm-pinned
 state
 
-echo "### 8. systemd-boot hang guard: pending left by the last boot (Linux never cleared it)"
+echo "### 8. systemd-boot hang guard: pending left by the last boot (the driver never returned)"
+linux_booted
+put_state pending
 boot_vm "systemd-boot guard: expect skip + disable"
 state
 
 echo "### 9. systemd-boot after the guard disabled it: expect tscsync not to run"
 boot_vm "systemd-boot guard: disabled"
+state
+
+# The driver swaps pending for returned1, 2, 3 when it returns. Nothing clears
+# them here (no Linux): another OS chosen from the menu, three times.
+echo "### 9b. systemd-boot guard: other OS chosen from the menu, boots 1-3 (expect runs, returned1..3)"
+make_sdboot_disk "$W/build/tscsync-driver.efi" "mode=measure"
+for n in 1 2 3; do
+	boot_vm "systemd-boot guard: other OS $n"
+	state
+done
+echo "### 9c. boot 4: three boots in a row never reached Linux (expect skip + disable)"
+boot_vm "systemd-boot guard: expect skip + disable (3 in a row)"
 state
 
 # --- rEFInd-style loading: the UEFI shell's "load" starts a driver and reports
@@ -198,7 +235,7 @@ shell_boot "shell load, exit=success, disabled"
 state
 
 echo "### 12. two copies in one boot: rEFInd-style load, then systemd-boot loads its own"
-echo "###     (expect one run, the second copy silent, no 'disabling', state: options pending)"
+echo "###     (expect one run, the second copy silent, no 'disabling', state: options returned1)"
 make_shell_disk 'load \\EFI\\refind\\drivers_x64\\tscsyncx64.efi\r\n\\EFI\\systemd\\systemd-bootx64.efi\r\n' "mode=measure exit=success"
 shell_boot "shell load, then systemd-boot"
 state
