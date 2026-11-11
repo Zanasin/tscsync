@@ -89,6 +89,17 @@ shim key or a MOK, but doesn't say how it checks drivers. A key in `db` is the
 safe choice. If rEFInd refuses the driver, it shows an error and boots
 normally without tscsync.
 
+### No key you can enroll: rEFInd with PreLoader and HashTool
+
+If you can't use a MOK or your own db key (for example, a forgotten BIOS
+password blocks the Secure Boot settings), rEFInd can still run tscsync when
+it is started through PreLoader. HashTool then enrolls the *hash* of
+`tscsyncx64.efi` instead of a key. See rEFInd's Secure Boot page
+(https://www.rodsbooks.com/refind/secureboot.html#preloader). Install with
+`--no-sign`, then enroll the installed driver's hash from HashTool at the next
+boot. A hash matches one exact file, so enroll the new one again after every
+tscsync update. Reported working on a ThinkBook 16 G6 ABP (#11).
+
 ## If the boot loader refuses the tool
 
 `tscsync-status` then reports "tscsync.efi did not run on this boot", and the
