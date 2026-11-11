@@ -5,7 +5,7 @@
 #
 # grubenv controls:
 #   tscsync_enable=1                     run tscsync.efi on this boot
-#   tscsync_mode=mode=measure|mode=sync[ …]  measure is read-only (default);
+#   tscsync_mode=mode=measure|mode=sync[ ...]  measure is read-only (default);
 #        optional tokens: allow=any-cpu layout=wide pause=key|N[s] color=off
 #   tscsync_pending                      hang guard, see below
 #

@@ -165,7 +165,7 @@ Linux still drops the TSC, see [below](#if-linux-still-drops-the-tsc).
 | Command | What it does |
 |---|---|
 | `sudo scripts/install.sh [--measure]` | Detects the loader (BootCurrent/LoaderInfo, else grub.cfg, else a rEFInd install), the ESP and an *enrolled* signing key; installs in measure mode; reinstall keeps the current mode unless `--measure` |
-| `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--no-exit-success\|--exit-success] [--no-wide\|--wide] [--no-pause\|--pause=key\|--pause=N[s]] [--color\|--no-color]` | Switches mode for the next boot. Defaults are listed first in each group. `--wide` packs per-AP results across the console; `--pause=…` waits before returning to the boot loader; colors are on by default (`--no-color` to disable). Non-defaults are kept across later changes |
+| `sudo scripts/set-mode.sh measure\|sync\|off [--any-cpu] [--no-exit-success\|--exit-success] [--no-wide\|--wide] [--no-pause\|--pause=key\|--pause=N[s]] [--color\|--no-color]` | Switches mode for the next boot. Defaults are listed first in each group. `--wide` packs per-AP results across the console (the saved report keeps full lines); `--pause=N` waits up to N seconds (1-60, any key continues) before returning to the boot loader, and `--pause=key` waits for a key (systemd-boot and rEFInd only); colors are on by default (`--no-color` to disable). Non-defaults are kept across later changes |
 | `tscsync-status` | Clocksource, kernel TSC messages with a one-line verdict on why the TSC was kept or dropped, and this boot's tscsync report |
 | `sudo scripts/uninstall.sh` | Removes everything |
 | `build/tscprobe` | Live per-core TSC offsets from Linux (read-only) |

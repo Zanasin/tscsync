@@ -170,10 +170,15 @@ measures it with the BSP's TSC, which tscsync moves forward.
   cannot be written, the driver does nothing.
 - Display options (same tokens in GRUB load options or the `options` file):
   `layout=wide` packs compact per-AP cells using `ConOut->QueryMode` (fallback
-  160 columns); `pause=key` / `pause=N` / `pause=Ns` wait before returning to
-  the boot loader (duration wins over `pause=key`); console colors are on by
-  default (`color=off` disables). Colors use `SetAttribute` on the live
-  console only — the `TscSyncResult` report copied to Linux stays plain text.
+  160 columns) on the console only; the `TscSyncResult` report keeps the full
+  lines. `pause=N` / `pause=Ns` (1-60 s; 0 means none) and `pause=key` wait
+  before returning to the boot loader (a duration wins over `pause=key`). The
+  driver marks the hang guard "returned" before it pauses; GRUB only can after
+  the tool returns, so `set-mode.sh` refuses `pause=key` with GRUB (a power-off
+  at the prompt would count as a hang). Console colors are on by default
+  (`color=off` disables); they use `SetAttribute` on the live console only and
+  restore the console's own attribute after each span. The report copied to
+  Linux stays plain text.
   Status tokens use light green / yellow / light red; phase headers cyan;
   informational asides light blue; the banner bright white.
 - Two copies in one boot: rEFInd chaining to systemd-boot, for example, would
@@ -227,4 +232,4 @@ behaviour in KVM is also only faithful when the host's own TSC is stable.
 | 2.2.1 | Reinstalling keeps the current mode (`--measure` to reset); the hang-guard service waits for the mount that holds the guard, e.g. a separate `/boot/efi` (#5); vmtest keeps the `kvm` group only where `/dev/kvm` needs it |
 | 2.2.2 | With Secure Boot off, a signing key found on the system no longer makes `sbsign` mandatory (installs unsigned if it is missing, #7); README notes on sleep (tscsync can't run on S3 resume, #8) and the AUR package |
 | 2.2.3 | Two-stage hang guard for GRUB and the driver: choosing another OS from the boot menu no longer turns tscsync off, only a tool that never returned or 3 boots in a row without Linux do. Installer (#9): evidence-based loader detect (then grub.cfg, then a rEFInd install; systemd-boot only from LoaderInfo); auto-sign only with an enrolled key (skip leftover DKMS); rEFInd/systemd-boot prefer sbctl db; `make check` policy tests; opt-in `make vmtest-secboot` (q35+SMM OVMF smokes). README: S3 results from three more machines |
-| (unreleased) | EFI display options via `set-mode`: `layout=wide`, `pause=key` / `pause=N[s]`, console colors default on (`color=off`); wide packing, status/RESULT/header/aside colors, optional key/timed wait before returning to the boot loader |
+| (unreleased) | EFI display options via `set-mode` (#10): `layout=wide`, `pause=N[s]` (1-60 s) and `pause=key` (driver only), console colors default on (`color=off`); the saved report keeps full lines; reinstall keeps only known options |

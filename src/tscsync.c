@@ -34,7 +34,8 @@
  *                 the default ABORTED under systemd-boot so it unloads quietly)
  *   layout=wide   pack compact per-AP cells across the console width
  *   pause=key     wait for a key before returning to the boot loader
- *   pause=N[s]    wait up to N seconds (optional trailing s); any key continues
+ *   pause=N[s]    wait up to N seconds, at most 60 (optional trailing s);
+ *                 any key continues; pause=0 means no pause
  *   color=off     disable console colors (colors are on by default)
  *
  * Safety properties:
@@ -171,6 +172,8 @@ static BOOLEAN layout_wide = FALSE;
 static INTN pause_secs = -1;	/* -1: none, 0: wait for key, >0: timed seconds */
 static UINTN console_cols = 160;
 static UINTN wide_col;		/* columns used on the current wide row */
+/* The console's own colors, restored after each colored span. */
+static UINTN con_attr = EFI_TEXT_ATTR(EFI_LIGHTGRAY, EFI_BACKGROUND_BLACK);
 
 #define barrier() __asm__ volatile("" ::: "memory")
 
@@ -222,24 +225,22 @@ static void set_fg(UINTN fg)
 {
 	if (!color_on || !ST || !ST->ConOut)
 		return;
-	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut,
-			  EFI_TEXT_ATTR(fg, EFI_BACKGROUND_BLACK));
+	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut, fg | (con_attr & 0x70));
 }
 
 static void reset_fg(void)
 {
 	if (!color_on || !ST || !ST->ConOut)
 		return;
-	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut,
-			  EFI_TEXT_ATTR(EFI_LIGHTGRAY, EFI_BACKGROUND_BLACK));
+	uefi_call_wrapper(ST->ConOut->SetAttribute, 2, ST->ConOut, con_attr);
 }
 
+/* End a packed console row. Console only: the report has full lines. */
 static void wide_flush(void)
 {
 	if (!wide_col)
 		return;
 	Print(u"\n");
-	report_put(u"\n");
 	wide_col = 0;
 }
 
@@ -280,6 +281,7 @@ static void init_console_cols(void)
 	console_cols = 160;
 	if (!ST || !ST->ConOut || !ST->ConOut->Mode)
 		return;
+	con_attr = (UINTN)ST->ConOut->Mode->Attribute;
 	if (!EFI_ERROR(uefi_call_wrapper(ST->ConOut->QueryMode, 4, ST->ConOut,
 					 (UINTN)ST->ConOut->Mode->Mode, &cols, &rows)) &&
 	    cols >= 40)
@@ -655,43 +657,14 @@ static void print_line(UINTN idx, UINT64 apic_id, const CHAR16 *what, INT64 off0
 {
 	CHAR16 warp[64] = u"";
 	CHAR16 head[192];
+	CHAR16 cell[64];
+	UINTN cell_len;
 	BOOLEAN uncertain = r->uncertain;
 	const CHAR16 *st = status_word(ok, uncertain);
 
 	if (r->warp_tested)
 		UnicodeSPrint(warp, sizeof(warp), u"  warps bsp/ap %lu/%lu",
 			      r->warps_bsp, r->warps_ap);
-
-	if (layout_wide) {
-		CHAR16 cell[64];
-		UINTN cell_len;
-
-		/* Compact cell; status colored; notes on a following full-width line. */
-		UnicodeSPrint(cell, sizeof(cell), u" %02lu:%ld ", (UINT64)idx, r->off);
-		cell_len = StrLen(cell) + StrLen(st) + 1;	/* +1 trailing space */
-		if (wide_col && wide_col + cell_len > console_cols)
-			wide_flush();
-		Print(u"%s", cell);
-		report_put(cell);
-		set_fg(status_fg(ok, uncertain));
-		Print(u"%s", st);
-		reset_fg();
-		report_put(st);
-		Print(u" ");
-		report_put(u" ");
-		wide_col += cell_len;
-		if (note && note[0]) {
-			wide_flush();
-			out(u"    note cpu %lu: %s\n", (UINT64)idx, note);
-		}
-		(void)what;
-		(void)apic_id;
-		(void)off0;
-		(void)iters;
-		(void)warp;
-		return;
-	}
-
 	if (iters)
 		UnicodeSPrint(head, sizeof(head),
 			      u"  %s %2lu apic %3lu: before %ld  after %ld  rtt %lu  iter %lu%s  ",
@@ -700,9 +673,39 @@ static void print_line(UINTN idx, UINT64 apic_id, const CHAR16 *what, INT64 off0
 		UnicodeSPrint(head, sizeof(head),
 			      u"  %s %2lu apic %3lu: offset %ld  rtt %lu%s  ",
 			      what, (UINT64)idx, apic_id, r->off, r->rtt, warp);
-	Print(u"%s", head);
+
+	if (!layout_wide) {
+		Print(u"%s", head);
+		report_put(head);
+		print_status_suffix(ok, uncertain, note, TRUE);
+		return;
+	}
+
+	/*
+	 * Wide: a compact cell on the console only. The report (tscsync-status,
+	 * what people post in issues) keeps the full line with rtt and warps.
+	 */
+	UnicodeSPrint(cell, sizeof(cell), u" %02lu:%ld ", (UINT64)idx, r->off);
+	cell_len = StrLen(cell) + StrLen(st) + 1;	/* +1 trailing space */
+	if (wide_col && wide_col + cell_len > console_cols)
+		wide_flush();
+	Print(u"%s", cell);
+	set_fg(status_fg(ok, uncertain));
+	Print(u"%s", st);
+	reset_fg();
+	Print(u" ");
+	wide_col += cell_len;
+	if (note && note[0]) {
+		wide_flush();
+		Print(u"    note cpu %lu: %s\n", (UINT64)idx, note);
+	}
 	report_put(head);
-	print_status_suffix(ok, uncertain, note, TRUE);
+	report_put(st);
+	if (note && note[0]) {
+		report_put(u" ");
+		report_put(note);
+	}
+	report_put(u"\n");
 }
 
 /*
@@ -947,7 +950,9 @@ static void parse_display_opts(void)
 			j++;
 		if (j != n && s[j] != u' ' && s[j] != 0)
 			continue;
-		pause_secs = (INTN)val;
+		if (val == 0)
+			continue;	/* pause=0: no pause (pause=key waits for a key) */
+		pause_secs = (INTN)(val > 60 ? 60 : val);
 	}
 	if (pause_secs < 0 && have_key)
 		pause_secs = 0;

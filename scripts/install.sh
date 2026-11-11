@@ -85,8 +85,10 @@ if [ -e /etc/tscsync.conf ]; then
 		grep -qw 'exit=success' "$STATE_DIR/options" 2>/dev/null && echo " exit=success" || true)
 fi
 MODE=mode=measure
-# Preserve mode plus optional tokens (allow=any-cpu, layout=wide, pause=…, color=off).
-if [ "$RESET" = 0 ] && [[ "$OLD_MODE" =~ ^mode=(measure|sync)( |$) ]]; then
+# Keep the mode and the options set-mode.sh writes (allow=any-cpu, layout=wide,
+# pause=key|N, color=off); anything else means the saved line isn't ours.
+MODE_RE='^mode=(measure|sync)( (allow=any-cpu|layout=wide|pause=(key|[1-9][0-9]*)|color=off))*$'
+if [ "$RESET" = 0 ] && [[ "$OLD_MODE" =~ $MODE_RE ]]; then
 	MODE=$OLD_MODE
 elif [ -n "${OLD_LOADER:-}" ] && [ "$RESET" = 0 ]; then
 	note "tscsync was off (set-mode off, or the hang guard); reinstalling in measure mode"

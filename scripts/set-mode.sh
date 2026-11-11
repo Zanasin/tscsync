@@ -12,7 +12,10 @@
 #                     unless you pass --no-exit-success.
 #   --wide            pack compact per-AP cells across the console width
 #   --pause=key       wait for a key before returning to the boot loader
-#   --pause=N[s]      wait up to N seconds (optional trailing s); any key continues
+#                     (driver only: with GRUB, powering off at the prompt
+#                     would count as a hang and turn tscsync off)
+#   --pause=N[s]      wait up to N seconds, 1-60 (optional trailing s); any
+#                     key continues
 #   --no-color        disable console colors (colors are on by default)
 # Defaults are listed first in each optional group above; non-defaults are
 # preserved across later set-mode calls until cleared.
@@ -54,7 +57,7 @@ for arg in "$@"; do
 	--pause=key) pause_tok=" pause=key"; clear_pause= ;;
 	--pause=*)
 		raw=${arg#--pause=}
-		if [[ "$raw" =~ ^[0-9]+s?$ ]]; then
+		if [[ "$raw" =~ ^[1-9][0-9]?s?$ ]] && [ "${raw%s}" -le 60 ]; then
 			# Normalize to pause=N (optional s accepted on input).
 			pause_tok=" pause=${raw%s}"
 			clear_pause=
@@ -86,6 +89,12 @@ if [ "${LOADER:-grub}" = grub ]; then
 		echo "note: --exit-success/--no-exit-success only apply to the driver (systemd-boot or rEFInd); ignored with GRUB" >&2
 	fi
 	exit_tok=
+	# GRUB marks the hang guard "returned" only after the tool returns, so a
+	# power-off at a key prompt would look like a hang. A timed pause is fine.
+	if [ "$pause_tok" = " pause=key" ]; then
+		echo "--pause=key is not supported with GRUB (powering off at the prompt would turn tscsync off as a hang); use --pause=N, e.g. --pause=15" >&2
+		exit 2
+	fi
 elif [ -z "$exit_tok" ] && [ -z "$clear_exit" ] &&
 	grep -qw 'exit=success' <<<"$prev_line"; then
 	exit_tok=" exit=success"
