@@ -21,9 +21,9 @@
 #                  <grub-dir>/custom.cfg           sourced by grub.cfg (41_custom)
 #                  grubenv: tscsync_enable=1 tscsync_mode=mode=measure tscsync_pending=0
 #   systemd-boot:  <ESP>/EFI/systemd/drivers/tscsyncx64.efi
-#                  <ESP>/EFI/tscsync/options       "mode=measure"
+#                  <ESP>/EFI/tscsync/options       "mode=measure" (+ optional display tokens)
 #   rEFInd:        <refind-dir>/drivers_x64/tscsyncx64.efi
-#                  <ESP>/EFI/tscsync/options       "mode=measure exit=success"
+#                  <ESP>/EFI/tscsync/options       "mode=measure exit=success" (+ optional display tokens)
 #   all:          /usr/local/libexec/tscsync-report     clears the hang guard after boot
 #                  /usr/local/bin/tscsync-status         status command
 #                  /etc/systemd/system/tscsync-report.service
@@ -71,7 +71,8 @@ current_mode() (
 		sed -n 's/^tscsync_mode=//p' <<<"$env"
 	else
 		[ -r "$STATE_DIR/options" ] && [ ! -e "$STATE_DIR/disabled" ] || exit 0
-		sed 's/ exit=success//' "$STATE_DIR/options"
+		# Keep display tokens; exit=success is tracked separately as OLD_EXIT.
+		sed -E 's/ exit=success//' "$STATE_DIR/options"
 	fi
 )
 OLD_MODE= OLD_EXIT=
@@ -84,7 +85,8 @@ if [ -e /etc/tscsync.conf ]; then
 		grep -qw 'exit=success' "$STATE_DIR/options" 2>/dev/null && echo " exit=success" || true)
 fi
 MODE=mode=measure
-if [ "$RESET" = 0 ] && [[ "$OLD_MODE" =~ ^mode=(measure|sync)( allow=any-cpu)?$ ]]; then
+# Preserve mode plus optional tokens (allow=any-cpu, layout=wide, pause=…, color=off).
+if [ "$RESET" = 0 ] && [[ "$OLD_MODE" =~ ^mode=(measure|sync)( |$) ]]; then
 	MODE=$OLD_MODE
 elif [ -n "${OLD_LOADER:-}" ] && [ "$RESET" = 0 ]; then
 	note "tscsync was off (set-mode off, or the hang guard); reinstalling in measure mode"

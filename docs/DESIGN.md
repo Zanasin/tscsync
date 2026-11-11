@@ -168,6 +168,14 @@ measures it with the BSP's TSC, which tscsync moves forward.
   reach Linux; finding `returned3` creates `disabled`.
   `tscsync-report.service` deletes all of them once Linux is up. If `pending`
   cannot be written, the driver does nothing.
+- Display options (same tokens in GRUB load options or the `options` file):
+  `layout=wide` packs compact per-AP cells using `ConOut->QueryMode` (fallback
+  160 columns); `pause=key` / `pause=N` / `pause=Ns` wait before returning to
+  the boot loader (duration wins over `pause=key`); console colors are on by
+  default (`color=off` disables). Colors use `SetAttribute` on the live
+  console only — the `TscSyncResult` report copied to Linux stays plain text.
+  Status tokens use light green / yellow / light red; phase headers cyan;
+  informational asides light blue; the banner bright white.
 - Two copies in one boot: rEFInd chaining to systemd-boot, for example, would
   start the driver twice, and the second copy would find the first one's
   `pending` file and switch tscsync off. So before anything else, every copy
@@ -219,3 +227,4 @@ behaviour in KVM is also only faithful when the host's own TSC is stable.
 | 2.2.1 | Reinstalling keeps the current mode (`--measure` to reset); the hang-guard service waits for the mount that holds the guard, e.g. a separate `/boot/efi` (#5); vmtest keeps the `kvm` group only where `/dev/kvm` needs it |
 | 2.2.2 | With Secure Boot off, a signing key found on the system no longer makes `sbsign` mandatory (installs unsigned if it is missing, #7); README notes on sleep (tscsync can't run on S3 resume, #8) and the AUR package |
 | 2.2.3 | Two-stage hang guard for GRUB and the driver: choosing another OS from the boot menu no longer turns tscsync off, only a tool that never returned or 3 boots in a row without Linux do. Installer (#9): evidence-based loader detect (then grub.cfg, then a rEFInd install; systemd-boot only from LoaderInfo); auto-sign only with an enrolled key (skip leftover DKMS); rEFInd/systemd-boot prefer sbctl db; `make check` policy tests; opt-in `make vmtest-secboot` (q35+SMM OVMF smokes). README: S3 results from three more machines |
+| (unreleased) | EFI display options via `set-mode`: `layout=wide`, `pause=key` / `pause=N[s]`, console colors default on (`color=off`); wide packing, status/RESULT/header/aside colors, optional key/timed wait before returning to the boot loader |
