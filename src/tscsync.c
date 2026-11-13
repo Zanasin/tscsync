@@ -709,6 +709,146 @@ static void print_line(UINTN idx, UINT64 apic_id, const CHAR16 *what, INT64 off0
 }
 
 /*
+ * Which side's TSC is written. The peer is fixed by the open session: the BSP
+ * when correcting an AP, or the reference AP when correcting the BSP.
+ */
+enum correct_side {
+	CORRECT_AP = 0,
+	CORRECT_BSP = 1,
+};
+
+/* +1: mover's forward step raises AP−BSP; −1: it lowers it (BSP write). */
+static INT64 correct_off_sign(enum correct_side side)
+{
+	return side == CORRECT_AP ? 1 : -1;
+}
+
+/*
+ * Closing step or warp-gate accept / nudge. On accept, *ok is TRUE and the
+ * caller must stop. On timeout, *note is set and the caller must stop.
+ * Otherwise *want is how far the moving side should step next (before shortfall).
+ */
+static BOOLEAN correct_want(enum correct_side side, struct result *r,
+			    INT64 *want, BOOLEAN *ok, const CHAR16 **note)
+{
+	INT64 off_sign = correct_off_sign(side);
+
+	if (!in_sync(r->off)) {
+		*want = off_sign * -r->off;
+		return TRUE;
+	}
+	/* In range: accept only if the kernel-style test agrees. */
+	if (!warp_test(r, WARP_GATE_ITERS)) {
+		*note = u"warp test timeout";
+		return FALSE;
+	}
+	if (warp_clean(r)) {
+		*ok = TRUE;
+		return FALSE;
+	}
+	INT64 step = tick > NUDGE ? (INT64)tick : NUDGE;
+	UINT64 mover_warps = side == CORRECT_AP ? r->warps_ap : r->warps_bsp;
+	UINT64 peer_warps = side == CORRECT_AP ? r->warps_bsp : r->warps_ap;
+
+	/* Mover-side warps: it is behind; peer-side: it is ahead. */
+	*want = mover_warps >= peer_warps ? step : -step;
+	if (side == CORRECT_AP)
+		r->warp_tested = FALSE;
+	return TRUE;
+}
+
+static INT64 correct_shortfall(enum correct_side side, INT64 shortfall,
+			       INT64 before, INT64 delta, INT64 after)
+{
+	INT64 off_sign = correct_off_sign(side);
+
+	return update_shortfall(shortfall,
+				off_sign * ((before + off_sign * delta) - after));
+}
+
+static BOOLEAN correct_adjust(enum correct_side side, INT64 delta,
+			      const CHAR16 **note)
+{
+	if (side == CORRECT_AP) {
+		if (!ap_command(CMD_ADJUST, delta)) {
+			*note = u"adjust timeout";
+			return FALSE;
+		}
+		return TRUE;
+	}
+	adjust_tsc(delta);
+	bsp_shift += delta;
+	return TRUE;
+}
+
+/*
+ * Shared sync corrector: shortfall compensation, warp-gate accept, and
+ * nudge-from-warp. Callers only choose which side moves; the open session
+ * names the peer. Session, TPL, the first measure, and "left alone" guards
+ * stay with the caller. *ok / *note / *iters are for logging.
+ *
+ * Loop order is preserved per side (AP: write then gate; BSP: gate then write)
+ * so accept timing and printed iteration counts stay unchanged.
+ */
+static void correct_side(enum correct_side side, INT64 initial_off,
+			 UINT64 *req, struct result *r,
+			 UINTN *iters, BOOLEAN *ok, const CHAR16 **note)
+{
+	INT64 shortfall = 0;
+	INT64 delta;
+
+	*ok = FALSE;
+	*note = u"";
+	r->off = initial_off;
+
+	if (side == CORRECT_AP) {
+		/* Adjust first with the closing step; gate after each measure. */
+		delta = -initial_off;
+		for (*iters = 1; *iters <= MAX_ITER; (*iters)++) {
+			INT64 want, before = r->off;
+
+			if (delta < -MAX_BACKWARD) {
+				*note = u"would need a large backward step: stopped";
+				return;
+			}
+			if (!correct_adjust(side, delta, note))
+				return;
+			if (!measure(req, &r->off, &r->rtt)) {
+				*note = u"measure timeout after adjust";
+				return;
+			}
+			if (!correct_want(side, r, &want, ok, note))
+				return;
+			shortfall = correct_shortfall(side, shortfall, before, delta, r->off);
+			delta = want + shortfall;
+		}
+	} else {
+		/* Decide (gate/nudge) first; apply, then learn shortfall. */
+		for (*iters = 1; *iters <= MAX_ITER; (*iters)++) {
+			INT64 want, before;
+
+			if (!correct_want(side, r, &want, ok, note))
+				return;
+			delta = want + shortfall;
+			before = r->off;
+			if (delta < -MAX_BACKWARD || delta > MAX_FORWARD) {
+				*note = u"correction out of range: stopped";
+				return;
+			}
+			if (!correct_adjust(side, delta, note))
+				return;
+			if (!measure(req, &r->off, &r->rtt)) {
+				*note = u"measure timeout after adjust";
+				return;
+			}
+			r->warp_tested = FALSE;
+			shortfall = correct_shortfall(side, shortfall, before, delta, r->off);
+		}
+	}
+	*note = u"did not converge";
+}
+
+/*
  * Measure one AP; with fix, correct it to the exact tick; with warp, run the
  * kernel-style test afterwards. Returns TRUE when the AP was measured; *ok
  * says whether it ends in sync (and warp-free if tested).
@@ -751,48 +891,7 @@ static BOOLEAN handle_ap(EFI_MP_SERVICES_PROTOCOL *mp, UINTN idx, UINT64 apic_id
 	} else if (-off0 > MAX_FORWARD) {
 		note = u"offset implausibly large: left alone";
 	} else {
-		INT64 delta = -off0, shortfall = 0, prev = off0;
-
-		for (iters = 1; iters <= MAX_ITER; iters++) {
-			if (delta < -MAX_BACKWARD) {
-				note = u"would need a large backward step: stopped";
-				break;
-			}
-			if (!ap_command(CMD_ADJUST, delta)) {
-				note = u"adjust timeout";
-				break;
-			}
-			if (!measure(&req, &r->off, &r->rtt)) {
-				note = u"measure timeout after adjust";
-				break;
-			}
-			INT64 want;	/* how far the AP must move */
-
-			if (!in_sync(r->off)) {
-				want = -r->off;
-			} else {
-				/* In range: accept only if the kernel-style test agrees. */
-				if (!warp_test(r, WARP_GATE_ITERS)) {
-					note = u"warp test timeout";
-					break;
-				}
-				if (warp_clean(r)) {
-					*ok = TRUE;
-					break;
-				}
-				INT64 step = tick > NUDGE ? (INT64)tick : NUDGE;
-
-				/* AP-side warps: the AP is behind; BSP-side: it is ahead. */
-				want = r->warps_ap >= r->warps_bsp ? step : -step;
-				r->warp_tested = FALSE;
-			}
-			/* The AP lands short of its target by this much. */
-			shortfall = update_shortfall(shortfall, (prev + delta) - r->off);
-			prev = r->off;
-			delta = want + shortfall;
-		}
-		if (iters > MAX_ITER)
-			note = u"did not converge";
+		correct_side(CORRECT_AP, off0, &req, r, &iters, ok, &note);
 	}
 	if (measured && warp) {
 		if (!warp_test(r, WARP_ITERS))
@@ -834,7 +933,7 @@ static BOOLEAN bump_bsp(EFI_MP_SERVICES_PROTOCOL *mp, UINTN ref_idx)
 	EFI_TPL old_tpl;
 	struct result r;
 	UINT64 req = 0;
-	INT64 off0 = 0, shortfall = 0;
+	INT64 off0 = 0;
 	BOOLEAN ok = FALSE;
 	UINTN iters = 0;
 	const CHAR16 *note = u"";
@@ -854,45 +953,7 @@ static BOOLEAN bump_bsp(EFI_MP_SERVICES_PROTOCOL *mp, UINTN ref_idx)
 		note = u"reference AP no longer ahead by a plausible amount: BSP left alone";
 		r.off = off0;
 	} else {
-		r.off = off0;
-		for (iters = 1; iters <= MAX_ITER; iters++) {
-			INT64 want;	/* how far the BSP must move */
-
-			if (!in_sync(r.off)) {
-				want = r.off;
-			} else {
-				if (!warp_test(&r, WARP_GATE_ITERS)) {
-					note = u"warp test timeout";
-					break;
-				}
-				if (warp_clean(&r)) {
-					ok = TRUE;
-					break;
-				}
-				/* In sync to the tick but the kernel test still sees
-				 * warps: nudge one tick toward the side that loses. */
-				INT64 step = tick > NUDGE ? (INT64)tick : NUDGE;
-
-				want = r.warps_bsp >= r.warps_ap ? step : -step;
-			}
-			INT64 delta = want + shortfall, before = r.off;
-
-			if (delta < -MAX_BACKWARD || delta > MAX_FORWARD) {
-				note = u"correction out of range: stopped";
-				break;
-			}
-			adjust_tsc(delta);	/* on the BSP */
-			bsp_shift += delta;
-			if (!measure(&req, &r.off, &r.rtt)) {
-				note = u"measure timeout after adjust";
-				break;
-			}
-			r.warp_tested = FALSE;
-			/* The BSP lands short of its target by this much. */
-			shortfall = update_shortfall(shortfall, r.off - (before - delta));
-		}
-		if (iters > MAX_ITER)
-			note = u"did not converge";
+		correct_side(CORRECT_BSP, off0, &req, &r, &iters, &ok, &note);
 	}
 	uefi_call_wrapper(BS->RestoreTPL, 1, old_tpl);
 	print_line(ref_idx, 0, u"bsp vs cpu", off0, &r, iters, ok, note);
