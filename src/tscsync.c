@@ -717,81 +717,133 @@ enum correct_side {
 	CORRECT_BSP = 1,
 };
 
+/* +1: mover's forward step raises AP−BSP; −1: it lowers it (BSP write). */
+static INT64 correct_off_sign(enum correct_side side)
+{
+	return side == CORRECT_AP ? 1 : -1;
+}
+
+/*
+ * Closing step or warp-gate accept / nudge. On accept, *ok is TRUE and the
+ * caller must stop. On timeout, *note is set and the caller must stop.
+ * Otherwise *want is how far the moving side should step next (before shortfall).
+ */
+static BOOLEAN correct_want(enum correct_side side, struct result *r,
+			    INT64 *want, BOOLEAN *ok, const CHAR16 **note)
+{
+	INT64 off_sign = correct_off_sign(side);
+
+	if (!in_sync(r->off)) {
+		*want = off_sign * -r->off;
+		return TRUE;
+	}
+	/* In range: accept only if the kernel-style test agrees. */
+	if (!warp_test(r, WARP_GATE_ITERS)) {
+		*note = u"warp test timeout";
+		return FALSE;
+	}
+	if (warp_clean(r)) {
+		*ok = TRUE;
+		return FALSE;
+	}
+	INT64 step = tick > NUDGE ? (INT64)tick : NUDGE;
+	UINT64 mover_warps = side == CORRECT_AP ? r->warps_ap : r->warps_bsp;
+	UINT64 peer_warps = side == CORRECT_AP ? r->warps_bsp : r->warps_ap;
+
+	/* Mover-side warps: it is behind; peer-side: it is ahead. */
+	*want = mover_warps >= peer_warps ? step : -step;
+	if (side == CORRECT_AP)
+		r->warp_tested = FALSE;
+	return TRUE;
+}
+
+static INT64 correct_shortfall(enum correct_side side, INT64 shortfall,
+			       INT64 before, INT64 delta, INT64 after)
+{
+	INT64 off_sign = correct_off_sign(side);
+
+	return update_shortfall(shortfall,
+				off_sign * ((before + off_sign * delta) - after));
+}
+
+static BOOLEAN correct_adjust(enum correct_side side, INT64 delta,
+			      const CHAR16 **note)
+{
+	if (side == CORRECT_AP) {
+		if (!ap_command(CMD_ADJUST, delta)) {
+			*note = u"adjust timeout";
+			return FALSE;
+		}
+		return TRUE;
+	}
+	adjust_tsc(delta);
+	bsp_shift += delta;
+	return TRUE;
+}
+
 /*
  * Shared sync corrector: shortfall compensation, warp-gate accept, and
  * nudge-from-warp. Callers only choose which side moves; the open session
  * names the peer. Session, TPL, the first measure, and "left alone" guards
  * stay with the caller. *ok / *note / *iters are for logging.
+ *
+ * Loop order is preserved per side (AP: write then gate; BSP: gate then write)
+ * so accept timing and printed iteration counts stay unchanged.
  */
 static void correct_side(enum correct_side side, INT64 initial_off,
 			 UINT64 *req, struct result *r,
 			 UINTN *iters, BOOLEAN *ok, const CHAR16 **note)
 {
-	BOOLEAN move_ap = side == CORRECT_AP;
-	/* +1: mover's forward step raises AP−BSP; −1: it lowers it (BSP write). */
-	INT64 off_sign = move_ap ? 1 : -1;
 	INT64 shortfall = 0;
-	INT64 delta = off_sign * -initial_off;	/* first step closes the gap */
+	INT64 delta;
 
 	*ok = FALSE;
 	*note = u"";
 	r->off = initial_off;
 
-	for (*iters = 1; *iters <= MAX_ITER; (*iters)++) {
-		INT64 want, before = r->off;
+	if (side == CORRECT_AP) {
+		/* Adjust first with the closing step; gate after each measure. */
+		delta = -initial_off;
+		for (*iters = 1; *iters <= MAX_ITER; (*iters)++) {
+			INT64 want, before = r->off;
 
-		if (move_ap) {
 			if (delta < -MAX_BACKWARD) {
 				*note = u"would need a large backward step: stopped";
 				return;
 			}
-		} else if (delta < -MAX_BACKWARD || delta > MAX_FORWARD) {
-			*note = u"correction out of range: stopped";
-			return;
-		}
-
-		if (move_ap) {
-			if (!ap_command(CMD_ADJUST, delta)) {
-				*note = u"adjust timeout";
+			if (!correct_adjust(side, delta, note))
+				return;
+			if (!measure(req, &r->off, &r->rtt)) {
+				*note = u"measure timeout after adjust";
 				return;
 			}
-		} else {
-			adjust_tsc(delta);
-			bsp_shift += delta;
+			if (!correct_want(side, r, &want, ok, note))
+				return;
+			shortfall = correct_shortfall(side, shortfall, before, delta, r->off);
+			delta = want + shortfall;
 		}
+	} else {
+		/* Decide (gate/nudge) first; apply, then learn shortfall. */
+		for (*iters = 1; *iters <= MAX_ITER; (*iters)++) {
+			INT64 want, before;
 
-		if (!measure(req, &r->off, &r->rtt)) {
-			*note = u"measure timeout after adjust";
-			return;
-		}
-		if (!move_ap)
+			if (!correct_want(side, r, &want, ok, note))
+				return;
+			delta = want + shortfall;
+			before = r->off;
+			if (delta < -MAX_BACKWARD || delta > MAX_FORWARD) {
+				*note = u"correction out of range: stopped";
+				return;
+			}
+			if (!correct_adjust(side, delta, note))
+				return;
+			if (!measure(req, &r->off, &r->rtt)) {
+				*note = u"measure timeout after adjust";
+				return;
+			}
 			r->warp_tested = FALSE;
-
-		if (!in_sync(r->off)) {
-			want = off_sign * -r->off;
-		} else {
-			/* In range: accept only if the kernel-style test agrees. */
-			if (!warp_test(r, WARP_GATE_ITERS)) {
-				*note = u"warp test timeout";
-				return;
-			}
-			if (warp_clean(r)) {
-				*ok = TRUE;
-				return;
-			}
-			INT64 step = tick > NUDGE ? (INT64)tick : NUDGE;
-			UINT64 mover_warps = move_ap ? r->warps_ap : r->warps_bsp;
-			UINT64 peer_warps = move_ap ? r->warps_bsp : r->warps_ap;
-
-			/* Mover-side warps: it is behind; peer-side: it is ahead. */
-			want = mover_warps >= peer_warps ? step : -step;
-			if (move_ap)
-				r->warp_tested = FALSE;
+			shortfall = correct_shortfall(side, shortfall, before, delta, r->off);
 		}
-		/* Landing error of this write; ignore implausible spikes. */
-		shortfall = update_shortfall(shortfall,
-					     off_sign * ((before + off_sign * delta) - r->off));
-		delta = want + shortfall;
 	}
 	*note = u"did not converge";
 }
